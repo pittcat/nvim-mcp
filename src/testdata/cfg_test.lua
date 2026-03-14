@@ -1,40 +1,7 @@
--- Add current project's lua directory to package path for nvim-mcp plugin
+-- Test configuration file for non-LSP tests
+-- Contains custom tool definitions for testing
+
 package.path = "./lua/?.lua;./lua/?/init.lua;" .. package.path
-
-vim.lsp.config["luals"] = {
-    cmd = { "lua-language-server" },
-    filetypes = { "lua" },
-    root_markers = { ".root" },
-    settings = {
-        luals = {
-            runtime = {
-                version = "LuaJIT",
-            },
-        },
-    },
-}
-vim.lsp.enable("luals")
-
-vim.lsp.config["gopls"] = {
-    cmd = { "gopls" },
-    filetypes = { "go" },
-    root_markers = { ".root" },
-}
-vim.lsp.enable("gopls")
-
-vim.lsp.config["zls"] = {
-    cmd = { "zls" },
-    filetypes = { "zig" },
-    root_markers = { ".root" },
-}
-vim.lsp.enable("zls")
-
-vim.lsp.config["ts_ls"] = {
-    cmd = { "typescript-language-server", "--stdio" },
-    filetypes = { "typescript", "typescriptreact", "typescript.tsx" },
-    root_markers = { ".root" },
-}
-vim.lsp.enable("ts_ls")
 
 local M = require("nvim-mcp")
 local MCP = M.MCP

@@ -94,22 +94,6 @@ macro_rules! connect_to_neovim {
     }};
 }
 
-macro_rules! wait_for_lsp_ready {
-    ($service:expr, $connection_id:expr, $lsp_client:expr) => {{
-        // Wait for LSP client (gopls) to be ready
-        let mut wait_lsp_args = Map::new();
-        wait_lsp_args.insert("connection_id".to_string(), Value::String($connection_id));
-        wait_lsp_args.insert("client_name".to_string(), Value::String($lsp_client));
-        wait_lsp_args.insert("timeout_ms".to_string(), Value::Number(30000.into()));
-
-        $service
-            .call_tool(call_tool_req("wait_for_lsp_ready", Some(wait_lsp_args)))
-            .await?;
-
-        info!("LSP client ready");
-    }};
-}
-
 // Helper function to extract connection_id from connect response
 fn extract_connection_id(
     result: &rmcp::model::CallToolResult,
@@ -291,7 +275,6 @@ async fn test_invalid_connection_id_handling() -> Result<(), Box<dyn std::error:
         "disconnect",
         "list_buffers",
         "exec_lua",
-        "lsp_clients",
         "cursor_position",
         "navigate",
     ];
@@ -612,23 +595,8 @@ async fn test_complete_workflow() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!result.content.is_empty());
     info!("✓ Listed buffers successfully");
 
-    // Step 3: Get LSP clients
-    info!("Step 3: Getting LSP clients");
-    let mut lsp_clients_args = Map::new();
-    lsp_clients_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-
-    let result = service
-        .call_tool(call_tool_req("lsp_clients", Some(lsp_clients_args)))
-        .await?;
-
-    assert!(!result.content.is_empty());
-    info!("✓ Got LSP clients successfully");
-
-    // Step 4: Disconnect
-    info!("Step 4: Disconnecting from Neovim");
+    // Step 3: Disconnect
+    info!("Step 3: Disconnecting from Neovim");
     let mut disconnect_args = Map::new();
     disconnect_args.insert(
         "connection_id".to_string(),
@@ -642,8 +610,8 @@ async fn test_complete_workflow() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!result.content.is_empty());
     info!("✓ Disconnected successfully");
 
-    // Step 5: Verify we can't list buffers after disconnect
-    info!("Step 5: Verifying disconnect");
+    // Step 4: Verify we can't list buffers after disconnect
+    info!("Step 4: Verifying disconnect");
     let mut invalid_list_args = Map::new();
     invalid_list_args.insert("connection_id".to_string(), Value::String(connection_id));
 
@@ -782,37 +750,6 @@ async fn test_exec_lua_tool() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 #[traced_test]
-async fn test_lsp_clients_tool() -> Result<(), Box<dyn std::error::Error>> {
-    let (service, connection_id, _guard) = setup_connected_service!();
-
-    // Now test lsp_clients
-    let mut lsp_clients_args = Map::new();
-    lsp_clients_args.insert("connection_id".to_string(), Value::String(connection_id));
-
-    let result = service
-        .call_tool(call_tool_req("lsp_clients", Some(lsp_clients_args)))
-        .await?;
-
-    info!("LSP clients result: {:#?}", result);
-    assert!(!result.content.is_empty());
-
-    // Verify the response contains content
-    if let Some(_content) = result.content.first() {
-        // Content received successfully - the JSON parsing is handled by the MCP framework
-        info!("LSP clients content received successfully");
-    } else {
-        panic!("No content in lsp_clients result");
-    }
-
-    // Cleanup happens automatically via guard
-    service.cancel().await?;
-    info!("LSP clients tool test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
 async fn test_list_diagnostic_resources() -> Result<(), Box<dyn std::error::Error>> {
     let (service, _, _guard) = setup_connected_service!();
 
@@ -904,161 +841,6 @@ async fn test_read_workspace_diagnostics() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-#[traced_test]
-#[tokio::test]
-async fn test_lsp_organize_imports_non_existent_file() -> Result<(), Box<dyn std::error::Error>> {
-    let (service, connection_id, _guard) = setup_connected_service!();
-
-    // Test lsp_organize_imports with valid connection but non-existent file
-    let mut args = Map::new();
-    args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    args.insert(
-        "document".to_string(),
-        Value::String(r#"{"project_relative_path": "non_existent_file.go"}"#.to_string()),
-    );
-    args.insert(
-        "lsp_client_name".to_string(),
-        Value::String("gopls".to_string()),
-    );
-    args.insert("apply_edits".to_string(), Value::Bool(false));
-
-    let result = service
-        .call_tool(call_tool_req("lsp_organize_imports", Some(args)))
-        .await;
-    info!("Organize imports result: {:#?}", result);
-
-    assert!(result.is_err(), "lsp_organize_imports should fail with LSP");
-    let r = result.unwrap_err();
-    // The result should contain either success message or actions
-    assert!(r.to_string().contains("No such file or directory"));
-
-    service.cancel().await?;
-    info!("Non-existent file test completed successfully");
-
-    Ok(())
-}
-
-#[traced_test]
-#[tokio::test]
-async fn test_lsp_organize_imports_with_lsp() -> Result<(), Box<dyn std::error::Error>> {
-    let (service, connection_id, _guard) = setup_connected_service!(
-        get_testdata_path("cfg_lsp.lua").to_str().unwrap(),
-        get_testdata_path("main.go").to_str().unwrap()
-    );
-
-    wait_for_lsp_ready!(service, connection_id.clone(), "gopls".to_string());
-
-    // Test lsp_organize_imports with apply_edits=true
-    let mut args = Map::new();
-    args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    args.insert(
-        "document".to_string(),
-        Value::String(r#"{"buffer_id": 0}"#.to_string()),
-    );
-    args.insert(
-        "lsp_client_name".to_string(),
-        Value::String("gopls".to_string()),
-    );
-    args.insert("apply_edits".to_string(), Value::Bool(true));
-
-    let result = service
-        .call_tool(call_tool_req("lsp_organize_imports", Some(args)))
-        .await;
-
-    assert!(
-        result.is_ok(),
-        "lsp_organize_imports should succeed with LSP"
-    );
-    let r = result.unwrap();
-    info!("Organize imports with LSP succeeded: {:?}", r);
-    // The result should contain either success message or actions
-    assert!(!r.content.is_empty());
-    assert!(
-        serde_json::to_string(&r)
-            .unwrap()
-            .contains("No organize imports actions available for this document")
-    );
-
-    service.cancel().await?;
-    info!("LSP organize imports test completed successfully");
-
-    Ok(())
-}
-
-#[traced_test]
-#[tokio::test]
-async fn test_lsp_organize_imports_inspect_mode() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing lsp_organize_imports in inspect mode (apply_edits=false)");
-    let (service, connection_id, _guard) = setup_connected_service!(
-        get_testdata_path("cfg_lsp.lua").to_str().unwrap(),
-        get_testdata_path("organize_imports.go").to_str().unwrap()
-    );
-
-    // Wait for LSP client (gopls) to be ready
-    let mut wait_lsp_args = Map::new();
-    wait_lsp_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    wait_lsp_args.insert(
-        "client_name".to_string(),
-        Value::String("gopls".to_string()),
-    );
-    wait_lsp_args.insert("timeout_ms".to_string(), Value::Number(5000.into()));
-
-    service
-        .call_tool(call_tool_req("wait_for_lsp_ready", Some(wait_lsp_args)))
-        .await?;
-
-    info!("LSP client ready");
-
-    // Test lsp_organize_imports with apply_edits=false (inspect mode)
-    let mut inspect_args = Map::new();
-    inspect_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    inspect_args.insert(
-        "document".to_string(),
-        Value::String(r#"{"buffer_id": 0}"#.to_string()),
-    );
-    inspect_args.insert(
-        "lsp_client_name".to_string(),
-        Value::String("gopls".to_string()),
-    );
-    inspect_args.insert("apply_edits".to_string(), Value::Bool(false));
-
-    let result = service
-        .call_tool(call_tool_req("lsp_organize_imports", Some(inspect_args)))
-        .await;
-
-    assert!(
-        result.is_ok(),
-        "lsp_organize_imports should succeed in inspect mode"
-    );
-
-    let r = result.unwrap();
-    info!("Organize imports inspection succeeded: {:?}", r);
-    // The result should contain either code actions or a message about no actions
-    assert!(!r.content.is_empty());
-    assert!(
-        serde_json::to_string(&r)
-            .unwrap()
-            .contains("documentChanges")
-    );
-
-    service.cancel().await?;
-    info!("Inspect mode test completed successfully");
-
-    Ok(())
-}
-
 #[tokio::test]
 #[traced_test]
 async fn test_lua_tools_end_to_end_workflow() -> Result<(), Box<dyn std::error::Error>> {
@@ -1072,7 +854,7 @@ async fn test_lua_tools_end_to_end_workflow() -> Result<(), Box<dyn std::error::
     info!("starting IPC Neovim for testing");
 
     let ipc_path = generate_random_socket_path();
-    let cfg_path = "src/testdata/cfg_lsp.lua";
+    let cfg_path = "src/testdata/cfg_test.lua";
     let open_file = "src/testdata/main.go";
 
     let child =
@@ -1376,381 +1158,11 @@ async fn test_navigate_tool() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 #[traced_test]
-async fn test_lsp_call_hierarchy_prepare() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing lsp_call_hierarchy_prepare");
-    let (service, connection_id, _guard) = setup_connected_service!(
-        get_testdata_path("cfg_lsp.lua").to_str().unwrap(),
-        get_testdata_path("call_hierarchy.go").to_str().unwrap()
-    );
-
-    wait_for_lsp_ready!(service, connection_id.clone(), "gopls".to_string());
-
-    // Test call hierarchy prepare - tool should exist and handle the request
-    let mut args = Map::new();
-    args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    args.insert(
-        "document".to_string(),
-        serde_json::json!({
-            "buffer_id": 0
-        }),
-    );
-    args.insert(
-        "lsp_client_name".to_string(),
-        Value::String("gopls".to_string()),
-    );
-    args.insert(
-        "line".to_string(),
-        Value::Number(serde_json::Number::from(16)),
-    ); // caller function line (0-based)
-    args.insert(
-        "character".to_string(),
-        Value::Number(serde_json::Number::from(5)),
-    ); // inside function name
-
-    let result = service
-        .call_tool(call_tool_req("lsp_call_hierarchy_prepare", Some(args)))
-        .await;
-
-    info!("Call hierarchy prepare result: {:?}", result);
-
-    // The tool should exist and execute (even if LSP is not available, it should not panic)
-    // It may return an error about LSP not being available, but the tool itself should work
-    match result {
-        Ok(tool_result) => {
-            info!("Tool executed successfully: {:?}", tool_result);
-            assert!(!tool_result.content.is_empty());
-        }
-        Err(e) => {
-            panic!("Tool failed as expected (LSP may not be ready): {}", e);
-            // Tool failure due to LSP unavailability is acceptable in test environment
-        }
-    }
-
-    service.cancel().await?;
-    info!("Call hierarchy prepare test completed successfully");
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_lsp_call_hierarchy_incoming_calls() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing lsp_call_hierarchy_incoming_calls");
-    let (service, connection_id, _guard) = setup_connected_service!(
-        get_testdata_path("cfg_lsp.lua").to_str().unwrap(),
-        get_testdata_path("call_hierarchy.go").to_str().unwrap()
-    );
-
-    wait_for_lsp_ready!(service, connection_id.clone(), "gopls".to_string());
-
-    // Create a mock call hierarchy item for testing
-    let mock_hierarchy_item = serde_json::json!({
-        "name": "helper",
-        "kind": 12, // Function symbol kind
-        "uri": get_file_uri("call_hierarchy.go"),
-        "range": {
-            "start": {"line": 5, "character": 5},
-            "end": {"line": 5, "character": 11}
-        },
-        "selectionRange": {
-            "start": {"line": 5, "character": 5},
-            "end": {"line": 5, "character": 11}
-        }
-    });
-
-    // Test incoming calls tool
-    let mut args = Map::new();
-    args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    args.insert(
-        "lsp_client_name".to_string(),
-        Value::String("gopls".to_string()),
-    );
-    args.insert("item".to_string(), mock_hierarchy_item);
-
-    let result = service
-        .call_tool(call_tool_req(
-            "lsp_call_hierarchy_incoming_calls",
-            Some(args),
-        ))
-        .await;
-
-    info!("Call hierarchy incoming calls result: {:?}", result);
-
-    // The tool should exist and execute (even if LSP is not available, it should not panic)
-    match result {
-        Ok(tool_result) => {
-            info!("Tool executed successfully: {:?}", tool_result);
-            assert!(!tool_result.content.is_empty());
-        }
-        Err(e) => {
-            panic!("Tool failed as expected (LSP may not be ready): {}", e);
-            // Tool failure due to LSP unavailability is acceptable in test environment
-        }
-    }
-
-    service.cancel().await?;
-    info!("Call hierarchy incoming calls test completed successfully");
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_lsp_call_hierarchy_outgoing_calls() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing lsp_call_hierarchy_outgoing_calls");
-    let (service, connection_id, _guard) = setup_connected_service!(
-        get_testdata_path("cfg_lsp.lua").to_str().unwrap(),
-        get_testdata_path("call_hierarchy.go").to_str().unwrap()
-    );
-
-    wait_for_lsp_ready!(service, connection_id.clone(), "gopls".to_string());
-
-    // Create a mock call hierarchy item for testing
-    let mock_hierarchy_item = serde_json::json!({
-        "name": "caller",
-        "kind": 12, // Function symbol kind
-        "uri": get_file_uri("call_hierarchy.go"),
-        "range": {
-            "start": {"line": 16, "character": 5},
-            "end": {"line": 16, "character": 11}
-        },
-        "selectionRange": {
-            "start": {"line": 16, "character": 5},
-            "end": {"line": 16, "character": 11}
-        }
-    });
-
-    // Test outgoing calls tool
-    let mut args = Map::new();
-    args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    args.insert(
-        "lsp_client_name".to_string(),
-        Value::String("gopls".to_string()),
-    );
-    args.insert("item".to_string(), mock_hierarchy_item);
-
-    let result = service
-        .call_tool(call_tool_req(
-            "lsp_call_hierarchy_outgoing_calls",
-            Some(args),
-        ))
-        .await;
-
-    info!("Call hierarchy outgoing calls result: {:?}", result);
-
-    // The tool should exist and execute (even if LSP is not available, it should not panic)
-    match result {
-        Ok(tool_result) => {
-            info!("Tool executed successfully: {:?}", tool_result);
-            assert!(!tool_result.content.is_empty());
-        }
-        Err(e) => {
-            panic!("Tool failed as expected (LSP may not be ready): {}", e);
-            // Tool failure due to LSP unavailability is acceptable in test environment
-        }
-    }
-
-    service.cancel().await?;
-    info!("Call hierarchy outgoing calls test completed successfully");
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_lsp_type_hierarchy_prepare() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing lsp_type_hierarchy_prepare");
-    let (service, connection_id, _guard) = setup_connected_service!(
-        get_testdata_path("cfg_lsp.lua").to_str().unwrap(),
-        get_testdata_path("type_hierarchy.go").to_str().unwrap()
-    );
-
-    wait_for_lsp_ready!(service, connection_id.clone(), "gopls".to_string());
-
-    // Test type hierarchy prepare - tool should exist and handle the request
-    let mut args = Map::new();
-    args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    args.insert(
-        "document".to_string(),
-        serde_json::json!({
-            "buffer_id": 0
-        }),
-    );
-    args.insert(
-        "lsp_client_name".to_string(),
-        Value::String("gopls".to_string()),
-    );
-    args.insert(
-        "line".to_string(),
-        Value::Number(serde_json::Number::from(11)),
-    ); // Shape interface line
-    args.insert(
-        "character".to_string(),
-        Value::Number(serde_json::Number::from(10)),
-    ); // inside interface name
-
-    let result = service
-        .call_tool(call_tool_req("lsp_type_hierarchy_prepare", Some(args)))
-        .await;
-
-    info!("Type hierarchy prepare result: {:?}", result);
-
-    // The tool should exist and execute (even if LSP is not available, it should not panic)
-    // It may return an error about LSP not being available, but the tool itself should work
-    match result {
-        Ok(tool_result) => {
-            info!("Tool executed successfully: {:?}", tool_result);
-            assert!(!tool_result.content.is_empty());
-        }
-        Err(e) => {
-            panic!("Tool failed as expected (LSP may not be ready): {}", e);
-            // Tool failure due to LSP unavailability is acceptable in test environment
-        }
-    }
-
-    service.cancel().await?;
-    info!("Type hierarchy prepare test completed successfully");
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_lsp_type_hierarchy_supertypes() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing lsp_type_hierarchy_supertypes");
-    let (service, connection_id, _guard) = setup_connected_service!(
-        get_testdata_path("cfg_lsp.lua").to_str().unwrap(),
-        get_testdata_path("type_hierarchy.go").to_str().unwrap()
-    );
-
-    wait_for_lsp_ready!(service, connection_id.clone(), "gopls".to_string());
-
-    // Create a mock type hierarchy item for testing
-    let mock_hierarchy_item = serde_json::json!({
-        "name": "ColoredShape",
-        "kind": 11, // Interface symbol kind
-        "uri": get_file_uri("type_hierarchy.go"),
-        "range": {
-            "start": {"line": 11, "character": 5},
-            "end": {"line": 11, "character": 17}
-        },
-        "selectionRange": {
-            "start": {"line": 11, "character": 5},
-            "end": {"line": 11, "character": 17}
-        }
-    });
-
-    // Test supertypes tool
-    let mut args = Map::new();
-    args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    args.insert(
-        "lsp_client_name".to_string(),
-        Value::String("gopls".to_string()),
-    );
-    args.insert("item".to_string(), mock_hierarchy_item);
-
-    let result = service
-        .call_tool(call_tool_req("lsp_type_hierarchy_supertypes", Some(args)))
-        .await;
-
-    info!("Type hierarchy supertypes result: {:?}", result);
-
-    // The tool should exist and execute (even if LSP is not available, it should not panic)
-    match result {
-        Ok(tool_result) => {
-            info!("Tool executed successfully: {:?}", tool_result);
-            assert!(!tool_result.content.is_empty());
-        }
-        Err(e) => {
-            panic!("Tool failed as expected (LSP may not be ready): {}", e);
-            // Tool failure due to LSP unavailability is acceptable in test environment
-        }
-    }
-
-    service.cancel().await?;
-    info!("Type hierarchy supertypes test completed successfully");
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_lsp_type_hierarchy_subtypes() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing lsp_type_hierarchy_subtypes");
-    let (service, connection_id, _guard) = setup_connected_service!(
-        get_testdata_path("cfg_lsp.lua").to_str().unwrap(),
-        get_testdata_path("type_hierarchy.go").to_str().unwrap()
-    );
-
-    wait_for_lsp_ready!(service, connection_id.clone(), "gopls".to_string());
-
-    // Create a mock type hierarchy item for testing
-    let mock_hierarchy_item = serde_json::json!({
-        "name": "Shape",
-        "kind": 11, // Interface symbol kind
-        "uri": get_file_uri("type_hierarchy.go"),
-        "range": {
-            "start": {"line": 5, "character": 5},
-            "end": {"line": 5, "character": 10}
-        },
-        "selectionRange": {
-            "start": {"line": 5, "character": 5},
-            "end": {"line": 5, "character": 10}
-        }
-    });
-
-    // Test subtypes tool
-    let mut args = Map::new();
-    args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    args.insert(
-        "lsp_client_name".to_string(),
-        Value::String("gopls".to_string()),
-    );
-    args.insert("item".to_string(), mock_hierarchy_item);
-
-    let result = service
-        .call_tool(call_tool_req("lsp_type_hierarchy_subtypes", Some(args)))
-        .await;
-
-    info!("Type hierarchy subtypes result: {:?}", result);
-
-    // The tool should exist and execute (even if LSP is not available, it should not panic)
-    match result {
-        Ok(tool_result) => {
-            info!("Tool executed successfully: {:?}", tool_result);
-            assert!(!tool_result.content.is_empty());
-        }
-        Err(e) => {
-            panic!("Tool failed as expected (LSP may not be ready): {}", e);
-            // Tool failure due to LSP unavailability is acceptable in test environment
-        }
-    }
-
-    service.cancel().await?;
-    info!("Type hierarchy subtypes test completed successfully");
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
 async fn test_read_project_relative_path() -> Result<(), Box<dyn std::error::Error>> {
     info!("Testing read buffer tool with project relative path");
 
     let (service, connection_id, _guard) = setup_connected_service!(
-        get_testdata_path("cfg_lsp.lua").to_str().unwrap(),
+        get_testdata_path("cfg_test.lua").to_str().unwrap(),
         get_testdata_path("main.go").to_str().unwrap()
     );
 
@@ -1841,7 +1253,7 @@ async fn test_read_absolute_path() -> Result<(), Box<dyn std::error::Error>> {
     info!("Testing read buffer tool with absolute path");
 
     let (service, connection_id, _guard) = setup_connected_service!(
-        get_testdata_path("cfg_lsp.lua").to_str().unwrap(),
+        get_testdata_path("cfg_test.lua").to_str().unwrap(),
         get_testdata_path("main.go").to_str().unwrap()
     );
 

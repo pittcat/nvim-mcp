@@ -431,7 +431,6 @@ pub async fn setup_auto_connected_client_ipc(
 
 #[derive(Debug, Clone, Copy)]
 pub struct AutoConnectAdvanceOptions {
-    pub wait_for_lsp_ready: bool,
     pub wait_for_diagnostics: bool,
     pub timeout_ms: u64,
 }
@@ -439,7 +438,6 @@ pub struct AutoConnectAdvanceOptions {
 impl Default for AutoConnectAdvanceOptions {
     fn default() -> Self {
         Self {
-            wait_for_lsp_ready: true,
             wait_for_diagnostics: true,
             timeout_ms: 15000,
         }
@@ -483,14 +481,6 @@ pub async fn setup_auto_connected_client_ipc_advance_with_options(
     if setup_result.is_err() {
         let _guard = NeovimIpcGuard::new(child, ipc_path.to_string());
         panic!("Failed to setup autocmd: {setup_result:?}");
-    }
-
-    if opts.wait_for_lsp_ready {
-        let lsp_result = client.wait_for_lsp_ready(None, opts.timeout_ms).await;
-        if lsp_result.is_err() {
-            let _guard = NeovimIpcGuard::new(child, ipc_path.to_string());
-            panic!("Failed to wait for LSP: {lsp_result:?}");
-        }
     }
 
     if opts.wait_for_diagnostics {

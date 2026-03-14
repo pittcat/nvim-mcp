@@ -12,7 +12,6 @@ scenarios.
 ## Features
 
 - **Multi-Connection Support**: Manage multiple concurrent Neovim instances
-- **LSP Integration**: Complete LSP workflow with code actions, hover, and diagnostics
 - **Universal Document Identifier**: Work with files by buffer ID, relative path,
   or absolute path
 - **MCP Resources**: Structured diagnostic data via connection-aware URI schemes
@@ -54,7 +53,6 @@ cargo install --path .
   style="max-height:640px; min-height: 200px">
 </video>
 
-- LSP Hover Translation (From [#85](https://github.com/linw1995/nvim-mcp/discussions/85))
 - Diagnostic Analysis and Code Fixes (From [#10](https://github.com/linw1995/nvim-mcp/discussions/10))
 - Smart Context Retrieval (From [#86](https://github.com/linw1995/nvim-mcp/discussions/86))
 - And more in [Discussions](https://github.com/linw1995/nvim-mcp/discussions)

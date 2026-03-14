@@ -7,3 +7,5 @@
 
 # Baked commit file used for crates.io packaging
 .packaged-commit
+.serena/
+.ralph/
