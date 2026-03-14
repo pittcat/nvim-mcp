@@ -1056,11 +1056,22 @@ async fn test_navigate_tool() -> Result<(), Box<dyn std::error::Error>> {
     {
         let navigate_data: serde_json::Value = serde_json::from_str(&text_content.text)?;
 
+        // Assert the new return contract: { path, line, column }
         assert!(
-            navigate_data["success"].as_bool().unwrap_or(false),
-            "Navigation should succeed"
+            navigate_data["path"].is_string(),
+            "Navigation should return path"
         );
-        assert_eq!(navigate_data["line"].as_str().unwrap_or_default(), "line 2");
+        assert!(
+            navigate_data["line"].is_number(),
+            "Navigation should return line as number"
+        );
+        assert!(
+            navigate_data["column"].is_number(),
+            "Navigation should return column as number"
+        );
+        // line 1 (0-based) = "line 2" in the file (1-based line 2)
+        assert_eq!(navigate_data["line"].as_u64().unwrap(), 1);
+        assert_eq!(navigate_data["column"].as_u64().unwrap(), 3);
         info!("✓ Successfully navigated to absolute path");
     }
 
@@ -1140,9 +1151,18 @@ async fn test_navigate_tool() -> Result<(), Box<dyn std::error::Error>> {
                 && let rmcp::model::RawContent::Text(text_content) = &content.raw
             {
                 let navigate_data: serde_json::Value = serde_json::from_str(&text_content.text)?;
+                // Assert the new return contract: { path, line, column }
                 assert!(
-                    navigate_data["success"].as_bool().unwrap_or(false),
-                    "Navigation by buffer ID should succeed"
+                    navigate_data["path"].is_string(),
+                    "Navigation by buffer ID should return path"
+                );
+                assert!(
+                    navigate_data["line"].is_number(),
+                    "Navigation by buffer ID should return line as number"
+                );
+                assert!(
+                    navigate_data["column"].is_number(),
+                    "Navigation by buffer ID should return column as number"
                 );
                 info!("✓ Successfully navigated by buffer ID");
             }
