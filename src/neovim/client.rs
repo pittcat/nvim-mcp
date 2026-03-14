@@ -1853,9 +1853,20 @@ where
             NeovimError::Connection("Not connected to any Neovim instance".to_string())
         })?;
 
+        let channel_id = conn
+            .nvim
+            .get_api_info()
+            .await
+            .map_err(|e| NeovimError::Api(format!("Failed to get RPC channel id: {e}")))?
+            .first()
+            .and_then(Value::as_i64)
+            .ok_or_else(|| {
+                NeovimError::Api("Failed to parse RPC channel id from nvim_get_api_info".to_string())
+            })?;
+
         match conn
             .nvim
-            .exec_lua(include_str!("lua/setup_autocmd.lua"), vec![])
+            .exec_lua(include_str!("lua/setup_autocmd.lua"), vec![Value::from(channel_id)])
             .await
         {
             Ok(_) => {

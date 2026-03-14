@@ -193,6 +193,81 @@ async fn test_get_vim_diagnostics() {
 #[tokio::test]
 #[traced_test]
 #[cfg(any(unix, windows))]
+async fn test_setup_autocmd_emits_setup_notification() {
+    let ipc_path = generate_random_ipc_path();
+
+    let child = setup_neovim_instance_ipc(&ipc_path).await;
+    let _guard = NeovimIpcGuard::new(child, ipc_path.clone());
+    let mut client = NeovimClient::default();
+    client
+        .connect_path(&ipc_path)
+        .await
+        .expect("Failed to connect to instance");
+
+    client
+        .setup_autocmd()
+        .await
+        .expect("Failed to setup autocmd");
+
+    let notification = client
+        .wait_for_notification("NVIM_MCP", 1000)
+        .await
+        .expect("Expected setup notification");
+
+    assert_eq!(notification.name, "NVIM_MCP");
+}
+
+#[tokio::test]
+#[traced_test]
+#[cfg(any(unix, windows))]
+async fn test_setup_autocmd_emits_diagnostics_changed_notification() {
+    let ipc_path = generate_random_ipc_path();
+
+    let child = setup_neovim_instance_ipc(&ipc_path).await;
+    let _guard = NeovimIpcGuard::new(child, ipc_path.clone());
+    let mut client = NeovimClient::default();
+    client
+        .connect_path(&ipc_path)
+        .await
+        .expect("Failed to connect to instance");
+
+    client
+        .setup_autocmd()
+        .await
+        .expect("Failed to setup autocmd");
+
+    client
+        .execute_lua(
+            r#"
+            local ns = vim.api.nvim_create_namespace("nvim-mcp-test")
+            vim.diagnostic.set(ns, 0, {
+                {
+                    lnum = 0,
+                    col = 0,
+                    end_lnum = 0,
+                    end_col = 1,
+                    severity = vim.diagnostic.severity.ERROR,
+                    message = "test diagnostic",
+                    source = "nvim-mcp-test",
+                },
+            })
+            return true
+            "#,
+        )
+        .await
+        .expect("Failed to trigger diagnostic change");
+
+    let notification = client
+        .wait_for_notification("NVIM_MCP_DiagnosticsChanged", 1000)
+        .await
+        .expect("Expected diagnostics changed notification");
+
+    assert_eq!(notification.name, "NVIM_MCP_DiagnosticsChanged");
+}
+
+#[tokio::test]
+#[traced_test]
+#[cfg(any(unix, windows))]
 async fn test_code_action() {
     let ipc_path = generate_random_ipc_path();
 
