@@ -44,13 +44,16 @@ local current_buf = vim.api.nvim_get_current_buf()
 -- Set cursor position
 vim.api.nvim_win_set_cursor(0, { params.position.line, params.position.character })
 
--- Return success information
+-- Return success information with the correct contract
 local current_bufname = vim.api.nvim_buf_get_name(current_buf)
-local line = vim.api.nvim_get_current_line()
+local cursor_pos = vim.api.nvim_win_get_cursor(0)
+-- Convert back to 0-based for the return value
+local line = cursor_pos[1] - 1
+local column = cursor_pos[2]
 return vim.json.encode({
     result = {
-        success = true,
-        buffer_name = current_bufname,
+        path = current_bufname,
         line = line,
+        column = column,
     },
 })

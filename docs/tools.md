@@ -30,8 +30,8 @@ establishment phase:
   a file at a specific position
   - Parameters: `connection_id` (string), `document` (DocumentIdentifier),
     `line` (number), `character` (number) (all positions are 0-indexed)
-  - Returns: Navigation result with success status, buffer name, and current
-    line content
+  - Returns: Navigation result with `path` (string), `line` (number, 0-based),
+    `column` (number, 0-based)
 
 - **`cursor_position`**: Get the current cursor position: buffer name,
   and zero-based row/col index
