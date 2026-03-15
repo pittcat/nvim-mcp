@@ -890,7 +890,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json;
 
     #[tokio::test]
     async fn test_notification_tracker_basic() {

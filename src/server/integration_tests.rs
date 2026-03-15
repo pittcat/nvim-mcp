@@ -1,5 +1,5 @@
 use rmcp::{
-    model::{CallToolRequestParams, ReadResourceRequestParams},
+    model::CallToolRequestParams,
     serde_json::{Map, Value},
     service::ServiceExt,
     transport::{ConfigureCommandExt, TokioChildProcess},
@@ -21,15 +21,6 @@ fn call_tool_req(
         arguments,
         meta: None,
         task: None,
-    }
-}
-
-/// Helper function to create ReadResourceRequestParams with only required fields.
-/// Other fields use default values to avoid API breakage when rmcp adds new fields.
-fn read_resource_req(uri: impl Into<String>) -> ReadResourceRequestParams {
-    ReadResourceRequestParams {
-        uri: uri.into(),
-        meta: None,
     }
 }
 

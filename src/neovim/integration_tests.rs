@@ -1,10 +1,5 @@
-use std::fs;
-
-use tempfile::TempDir;
-use tracing::info;
 use tracing_test::traced_test;
 
-use crate::neovim::client::{DocumentIdentifier, Position};
 use crate::neovim::{NeovimClient, NeovimClientTrait};
 use crate::test_utils::*;
 
