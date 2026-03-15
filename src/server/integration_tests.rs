@@ -71,7 +71,7 @@ macro_rules! setup_connected_service {
             .call_tool(call_tool_req("connect", Some(connect_args)))
             .await?;
 
-        // Extract connection_id from result
+        // Extract connection_id from JSON result
         let content_text = result
             .content
             .first()
@@ -79,12 +79,11 @@ macro_rules! setup_connected_service {
             .map(|t| t.text.clone())
             .unwrap_or_default();
 
-        let connection_id = content_text
-            .lines()
-            .find(|l: &&str| l.contains("Connection ID"))
-            .and_then(|l: &str| l.split('`').nth(1))
-            .map(|s: &str| s.to_string())
-            .ok_or("Failed to extract connection_id")?;
+        let response_json: serde_json::Value = serde_json::from_str(&content_text)?;
+        let connection_id = response_json["connection_id"]
+            .as_str()
+            .ok_or("Failed to extract connection_id from response")?
+            .to_string();
 
         (service, connection_id, nvim_guard)
     }};
@@ -117,8 +116,8 @@ async fn test_mcp_server_connection() -> Result<(), Box<dyn std::error::Error>> 
     assert!(!result.content.is_empty());
     let content = result.content.first().unwrap().as_text().unwrap();
     assert!(
-        content.text.contains("Connected successfully"),
-        "Expected success message, got: {}",
+        content.text.contains("connection_id"),
+        "Expected connection_id in response, got: {}",
         content.text
     );
 
@@ -155,25 +154,26 @@ async fn test_connect_nvim() -> Result<(), Box<dyn std::error::Error>> {
         .call_tool(call_tool_req("connect", Some(connect_args)))
         .await?;
 
-    // Verify response
+    // Verify response - connection returns JSON with connection_id
     assert!(!result.content.is_empty());
     let content = result.content.first().unwrap().as_text().unwrap();
-    assert!(content.text.contains("Connected successfully"));
+    assert!(
+        content.text.contains("connection_id"),
+        "Expected connection_id in response, got: {}",
+        content.text
+    );
 
-    // Extract connection_id
-    let connection_id = content
-        .text
-        .lines()
-        .find(|l: &&str| l.contains("Connection ID"))
-        .and_then(|l: &str| l.split('`').nth(1))
-        .map(|s: &str| s.to_string())
-        .ok_or("Failed to extract connection_id")?;
+    // Parse connection_id from JSON response
+    let response_json: serde_json::Value = serde_json::from_str(&content.text)?;
+    let connection_id = response_json["connection_id"]
+        .as_str()
+        .ok_or("Failed to extract connection_id from response")?;
 
     info!("Connected with ID: {}", connection_id);
 
     // Verify connection exists via list_buffers
     let mut list_args = Map::new();
-    list_args.insert("connection_id".to_string(), Value::String(connection_id));
+    list_args.insert("connection_id".to_string(), Value::String(connection_id.to_string()));
 
     let buffers_result = service
         .call_tool(call_tool_req("list_buffers", Some(list_args)))
@@ -243,7 +243,7 @@ async fn test_disconnect_nvim() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify connection no longer exists
     let mut list_args = Map::new();
-    list_args.insert("connection_id".to_string(), Value::String(connection_id));
+    list_args.insert("connection_id".to_string(), Value::String(connection_id.to_string()));
 
     let result = service
         .call_tool(call_tool_req("list_buffers", Some(list_args)))
@@ -445,10 +445,10 @@ async fn test_complete_workflow() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let result = service
-        .call_tool(call_tool_req("execute_lua", Some(lua_args)))
+        .call_tool(call_tool_req("exec_lua", Some(lua_args)))
         .await?;
 
-    info!("execute_lua result: {:?}", result);
+    info!("exec_lua result: {:?}", result);
     assert!(!result.content.is_empty());
 
     // Get cursor position
@@ -459,10 +459,10 @@ async fn test_complete_workflow() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let result = service
-        .call_tool(call_tool_req("get_cursor_position", Some(cursor_args)))
+        .call_tool(call_tool_req("cursor_position", Some(cursor_args)))
         .await?;
 
-    info!("get_cursor_position result: {:?}", result);
+    info!("cursor_position result: {:?}", result);
     assert!(!result.content.is_empty());
 
     service.cancel().await?;
@@ -474,7 +474,7 @@ async fn test_complete_workflow() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::test]
 #[traced_test]
 async fn test_cursor_position_tool() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing get_cursor_position tool");
+    info!("Testing cursor_position tool");
 
     let (service, connection_id, _guard) = setup_connected_service!();
 
@@ -486,10 +486,10 @@ async fn test_cursor_position_tool() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let result = service
-        .call_tool(call_tool_req("get_cursor_position", Some(cursor_args)))
+        .call_tool(call_tool_req("cursor_position", Some(cursor_args)))
         .await?;
 
-    info!("get_cursor_position result: {:?}", result);
+    info!("cursor_position result: {:?}", result);
     assert!(!result.content.is_empty());
 
     // Parse the result to verify structure
@@ -703,11 +703,42 @@ async fn test_http_multi_client_session_resume_stability() -> Result<(), Box<dyn
     info!("Client B session ID: {}", session_id_b);
     assert_ne!(session_id_a, session_id_b, "Sessions should be different");
 
+    // Client A: Send initialized notification (required by MCP protocol)
+    // The notification should return 202 Accepted (no response body for notifications)
+    let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+    let response_a_init = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("mcp-session-id", &session_id_a)
+        .body(initialized_request)
+        .send()
+        .await?;
+    assert_eq!(response_a_init.status(), 202, "Initialized notification should return 202");
+    info!("Client A sent initialized notification");
+
+    // Client B: Send initialized notification
+    let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+    let response_b_init = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("mcp-session-id", &session_id_b)
+        .body(initialized_request)
+        .send()
+        .await?;
+    assert_eq!(response_b_init.status(), 202, "Initialized notification should return 202");
+    info!("Client B sent initialized notification");
+
+    // Small delay to ensure notifications are processed
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
     // Client A: Call tools/list using session
     let tools_request = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_string();
     let response = client
         .post(&mcp_url)
         .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id_a)
         .body(tools_request)
         .send()
@@ -723,6 +754,7 @@ async fn test_http_multi_client_session_resume_stability() -> Result<(), Box<dyn
     let response = client
         .post(&mcp_url)
         .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id_b)
         .body(tools_request)
         .send()
@@ -752,11 +784,28 @@ async fn test_http_multi_client_session_resume_stability() -> Result<(), Box<dyn
 
     info!("Client C session ID: {}", session_id_c);
 
+    // Client C: Send initialized notification
+    let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+    let response_c_init = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("mcp-session-id", &session_id_c)
+        .body(initialized_request)
+        .send()
+        .await?;
+    assert_eq!(response_c_init.status(), 202, "Initialized notification should return 202");
+    info!("Client C sent initialized notification");
+
+    // Small delay to ensure notification is processed
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
     // Verify all three sessions are independent
     let tools_request = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_string();
     let response = client
         .post(&mcp_url)
         .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id_c)
         .body(tools_request)
         .send()
@@ -813,6 +862,24 @@ async fn test_http_multi_client_shared_connection_visibility()
         info!("Session {}: {}", i + 1, sessions[i]);
     }
 
+    // Send initialized notification for each session (required by MCP protocol)
+    for (i, session_id) in sessions.iter().enumerate() {
+        let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+        let response = client
+            .post(&mcp_url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("mcp-session-id", session_id)
+            .body(initialized_request)
+            .send()
+            .await?;
+        assert_eq!(response.status(), 202, "Client {} initialized notification should return 202", i + 1);
+        info!("Client {} sent initialized notification", i + 1);
+    }
+
+    // Small delay to ensure notifications are processed
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
     // Each client reads the connections resource
     let read_resource_request =
         r#"{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"nvim-connections://"}}"#.to_string();
@@ -821,6 +888,7 @@ async fn test_http_multi_client_shared_connection_visibility()
         let response = client
             .post(&mcp_url)
             .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
             .header("mcp-session-id", session_id)
             .body(read_resource_request.clone())
             .send()
@@ -853,6 +921,7 @@ async fn test_http_multi_client_shared_connection_visibility()
         let response = client
             .post(&mcp_url)
             .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
             .header("mcp-session-id", session_id)
             .body(tools_resource_request.clone())
             .send()
@@ -955,6 +1024,18 @@ async fn test_http_stale_socket_does_not_break_shared_session()
         .map(|s: &str| s.to_string())
         .expect("Should have session ID");
 
+    // Client A: Send initialized notification (required by MCP protocol)
+    let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+    let response_init = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("mcp-session-id", &session_id_a)
+        .body(initialized_request)
+        .send()
+        .await?;
+    assert_eq!(response_init.status(), 202, "Initialized notification should return 202");
+
     // Client A: Try to connect to a non-existent (stale) socket
     let stale_target = "/tmp/non-existent-stale-socket-test.sock";
     let connect_request = format!(
@@ -965,6 +1046,7 @@ async fn test_http_stale_socket_does_not_break_shared_session()
     let response = client
         .post(&mcp_url)
         .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id_a)
         .body(connect_request)
         .send()
@@ -1014,6 +1096,18 @@ async fn test_http_stale_socket_does_not_break_shared_session()
         .map(|s: &str| s.to_string())
         .expect("Should have session ID for client B");
 
+    // Client B: Send initialized notification
+    let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+    let response_b_init = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("mcp-session-id", &session_id_b)
+        .body(initialized_request)
+        .send()
+        .await?;
+    assert_eq!(response_b_init.status(), 202, "Client B initialized notification should return 202");
+
     // Client B: Connect to valid socket
     let connect_request = format!(
         r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"connect","arguments":{{"target":"{}"}}}}}}"#,
@@ -1023,6 +1117,7 @@ async fn test_http_stale_socket_does_not_break_shared_session()
     let response = client
         .post(&mcp_url)
         .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id_b)
         .body(connect_request)
         .send()
@@ -1043,6 +1138,7 @@ async fn test_http_stale_socket_does_not_break_shared_session()
     let response = client
         .post(&mcp_url)
         .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
         .header("mcp-session-id", &session_id_a)
         .body(tools_request)
         .send()
