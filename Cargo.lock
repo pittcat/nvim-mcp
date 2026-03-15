@@ -1240,6 +1240,7 @@ dependencies = [
  "nvim-rs",
  "rand 0.10.0",
  "regex",
+ "reqwest",
  "rmcp",
  "rmpv",
  "schemars",

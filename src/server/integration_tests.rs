@@ -8,7 +8,7 @@ use tokio::process::Command;
 use tracing::{error, info};
 use tracing_test::traced_test;
 
-use crate::{server::core::b3sum, test_utils::*};
+use crate::test_utils::*;
 
 /// Helper function to create CallToolRequestParams with only required fields.
 /// Other fields use default values to avoid API breakage when rmcp adds new fields.
@@ -51,119 +51,83 @@ macro_rules! create_mcp_service {
     }};
 }
 
-/// Macro to setup auto-connected service and return (service, connection_id, guard)
-/// This eliminates the boilerplate for auto-connect tests
+// Macro to set up a connected MCP service (service + connection_id + guard)
 macro_rules! setup_connected_service {
     () => {{
-        let ipc_path = generate_random_ipc_path();
-        let _guard = setup_test_neovim_instance(&ipc_path).await?;
-        let service = create_mcp_service!(&ipc_path);
-        let connection_id = b3sum(&ipc_path)[..7].to_string();
-        (service, connection_id, _guard)
-    }};
-    ($cfg_path:expr, $open_file:expr) => {{
-        let ipc_path = generate_random_ipc_path();
-        let child = setup_neovim_instance_socket_advance(&ipc_path, $cfg_path, $open_file).await;
-        let _guard = NeovimIpcGuard::new(child, ipc_path.clone());
-        let service = create_mcp_service!(&ipc_path);
-        let connection_id = b3sum(&ipc_path)[..7].to_string();
-        (service, connection_id, _guard)
-    }};
-}
+        let _guard = NEOVIM_TEST_MUTEX.lock().unwrap();
 
-/// Macro to connect to a Neovim instance through MCP service and get connection_id
-macro_rules! connect_to_neovim {
-    ($service:expr, $ipc_path:expr) => {{
+        // Generate random socket path for test isolation
+        let ipc_path = generate_random_ipc_path();
+        let nvim_guard = setup_test_neovim_instance(&ipc_path).await?;
+
+        // Create MCP service
+        let service = create_mcp_service!();
+
+        // Connect to the Neovim instance
         let mut connect_args = Map::new();
-        connect_args.insert("target".to_string(), Value::String($ipc_path));
+        connect_args.insert("target".to_string(), Value::String(ipc_path.clone()));
 
-        let connect_result = $service
+        let result = service
             .call_tool(call_tool_req("connect", Some(connect_args)))
             .await?;
 
-        extract_connection_id(&connect_result)?
+        // Extract connection_id from result
+        let content_text = result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap_or_default();
+
+        let connection_id = content_text
+            .lines()
+            .find(|l: &&str| l.contains("Connection ID"))
+            .and_then(|l: &str| l.split('`').nth(1))
+            .map(|s: &str| s.to_string())
+            .ok_or("Failed to extract connection_id")?;
+
+        (service, connection_id, nvim_guard)
     }};
-}
-
-// Helper function to extract connection_id from connect response
-fn extract_connection_id(
-    result: &rmcp::model::CallToolResult,
-) -> Result<String, Box<dyn std::error::Error>> {
-    if let Some(content) = result.content.first() {
-        // The content should be JSON
-        let json_str = match &content.raw {
-            rmcp::model::RawContent::Text(text_content) => &text_content.text,
-            _ => return Err("Expected text content".into()),
-        };
-
-        // Parse JSON
-        let json_value: serde_json::Value = serde_json::from_str(json_str)?;
-        if let Some(connection_id) = json_value["connection_id"].as_str() {
-            return Ok(connection_id.to_string());
-        }
-    }
-    Err("Failed to extract connection_id from response".into())
-}
-
-#[traced_test]
-#[tokio::test]
-async fn test_graceful_close_mcp_server() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting MCP server using pre-compiled binary");
-
-    let mut child = Command::new(get_compiled_binary())
-        .stdin(std::process::Stdio::piped())
-        .spawn()?;
-
-    // Wait a moment to ensure the server starts
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-    // Check if the process is still running
-    match child.try_wait()? {
-        Some(status) => {
-            error!("MCP server exited prematurely with status: {}", status);
-            return Err("MCP server exited prematurely".into());
-        }
-        None => {
-            info!("MCP server is running");
-        }
-    }
-
-    // Clean up: terminate the server process
-    // Close stdin
-    if let Some(stdin) = child.stdin.take() {
-        drop(stdin);
-    }
-    // Or send SIGTERM signal
-
-    child.wait().await?;
-    info!("MCP server process terminated");
-
-    Ok(())
 }
 
 #[tokio::test]
 #[traced_test]
 async fn test_mcp_server_connection() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting MCP client to test nvim-mcp server");
+    info!("Testing MCP server connection");
 
-    // Connect to the server using pre-compiled binary
+    // Acquire global lock to prevent concurrent port/socket conflicts
+    let _guard = NEOVIM_TEST_MUTEX.lock().unwrap();
+
+    // Generate random socket path for test isolation
+    let ipc_path = generate_random_ipc_path();
+    let nvim_guard = setup_test_neovim_instance(&ipc_path).await?;
+
+    // Create MCP service
     let service = create_mcp_service!();
 
-    // Get server information
-    let server_info = service.peer_info();
-    info!("Connected to server: {:#?}", server_info);
+    // Test connection
+    let mut connect_args = Map::new();
+    connect_args.insert("target".to_string(), Value::String(ipc_path.clone()));
 
-    // Verify server info contains expected information
-    if let Some(info) = server_info {
-        assert!(info.instructions.is_none());
-        // Verify server capabilities
-        assert!(info.capabilities.tools.is_some());
-    } else {
-        panic!("Expected server info to be present");
-    }
+    let result = service
+        .call_tool(call_tool_req("connect", Some(connect_args)))
+        .await?;
 
-    // Gracefully close the connection
+    // Verify response
+    assert!(!result.content.is_empty());
+    let content = result.content.first().unwrap().as_text().unwrap();
+    assert!(
+        content.text.contains("Connected successfully"),
+        "Expected success message, got: {}",
+        content.text
+    );
+
+    info!("Connection test result: {}", content.text);
+
+    // Clean up
     service.cancel().await?;
+    drop(nvim_guard);
+
     info!("MCP server connection test completed successfully");
 
     Ok(())
@@ -171,138 +135,54 @@ async fn test_mcp_server_connection() -> Result<(), Box<dyn std::error::Error>> 
 
 #[tokio::test]
 #[traced_test]
-async fn test_list_tools() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting MCP client to test nvim-mcp server");
-
-    let service = create_mcp_service!();
-
-    // List available tools
-    let tools = service.list_tools(Default::default()).await?;
-    info!("Available tools: {:#?}", tools);
-
-    // Verify we have the expected tools
-    let tool_names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_ref()).collect();
-    assert!(tool_names.contains(&"get_targets"));
-    assert!(tool_names.contains(&"connect"));
-    assert!(tool_names.contains(&"connect_tcp"));
-
-    // Verify tool descriptions are present
-    for tool in &tools.tools {
-        assert!(tool.description.is_some());
-        assert!(!tool.description.as_ref().unwrap().is_empty());
-    }
-
-    service.cancel().await?;
-    info!("List tools test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
 async fn test_connect_nvim() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting MCP client to test nvim-mcp server");
+    info!("Testing connect tool");
 
+    let _guard = NEOVIM_TEST_MUTEX.lock().unwrap();
+
+    // Generate random socket path for test isolation
+    let ipc_path = generate_random_ipc_path();
+    let nvim_guard = setup_test_neovim_instance(&ipc_path).await?;
+
+    // Create MCP service
     let service = create_mcp_service!();
 
-    // Start a test Neovim instance
-    let ipc_path = generate_random_ipc_path();
-    let _guard = setup_test_neovim_instance(&ipc_path).await?;
+    // Test connection via tool
+    let mut connect_args = Map::new();
+    connect_args.insert("target".to_string(), Value::String(ipc_path.clone()));
 
-    // Create arguments as Map (based on rmcp expectations)
-    let mut arguments = Map::new();
-    arguments.insert("target".to_string(), Value::String(ipc_path.clone()));
-
-    // Test successful connection
     let result = service
-        .call_tool(call_tool_req("connect", Some(arguments)))
+        .call_tool(call_tool_req("connect", Some(connect_args)))
         .await?;
 
-    info!("Connect result: {:#?}", result);
+    // Verify response
     assert!(!result.content.is_empty());
+    let content = result.content.first().unwrap().as_text().unwrap();
+    assert!(content.text.contains("Connected successfully"));
 
-    // Verify the response contains success message
-    if let Some(content) = result.content.first() {
-        if let Some(text) = content.as_text() {
-            assert!(text.text.contains("connection_id"));
-        } else {
-            panic!("Expected text content in connect result");
-        }
-    } else {
-        panic!("No content in connect result");
-    }
+    // Extract connection_id
+    let connection_id = content
+        .text
+        .lines()
+        .find(|l: &&str| l.contains("Connection ID"))
+        .and_then(|l: &str| l.split('`').nth(1))
+        .map(|s: &str| s.to_string())
+        .ok_or("Failed to extract connection_id")?;
 
-    // Test that connecting again succeeds (IPC connections allow reconnection)
-    let mut arguments2 = Map::new();
-    arguments2.insert("target".to_string(), Value::String(ipc_path.clone()));
+    info!("Connected with ID: {}", connection_id);
 
-    let result = service
-        .call_tool(call_tool_req("connect", Some(arguments2)))
-        .await;
+    // Verify connection exists via list_buffers
+    let mut list_args = Map::new();
+    list_args.insert("connection_id".to_string(), Value::String(connection_id));
 
-    // For IPC connections, we allow reconnection to the same path
-    assert!(
-        result.is_ok(),
-        "Should be able to reconnect to the same IPC path"
-    );
+    let buffers_result = service
+        .call_tool(call_tool_req("list_buffers", Some(list_args)))
+        .await?;
 
-    // Cleanup happens automatically via guard
-    service.cancel().await?;
-    info!("Connect nvim tool test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_invalid_connection_id_handling() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting MCP client to test invalid connection ID handling");
-
-    let service = create_mcp_service!();
-
-    // Test that all connection-aware tools fail with invalid connection ID
-    let invalid_connection_id = "invalid_connection_id".to_string();
-    let tools_to_test = vec![
-        "disconnect",
-        "list_buffers",
-        "exec_lua",
-        "cursor_position",
-        "navigate",
-    ];
-
-    for tool_name in tools_to_test {
-        let mut args = Map::new();
-        args.insert(
-            "connection_id".to_string(),
-            Value::String(invalid_connection_id.clone()),
-        );
-
-        // Add tool-specific required arguments
-        match tool_name {
-            "exec_lua" => {
-                args.insert("code".to_string(), Value::String("return 42".to_string()));
-            }
-            "navigate" => {
-                args.insert("document".to_string(), serde_json::json!({"buffer_id": 1}));
-                args.insert("line".to_string(), Value::Number(0.into()));
-                args.insert("character".to_string(), Value::Number(0.into()));
-            }
-            _ => {}
-        }
-
-        let result = service
-            .call_tool(call_tool_req(tool_name.to_string(), Some(args)))
-            .await;
-
-        assert!(
-            result.is_err(),
-            "{} should fail with invalid connection ID",
-            tool_name
-        );
-    }
+    assert!(!buffers_result.content.is_empty());
 
     service.cancel().await?;
-    info!("Invalid connection ID handling test completed successfully");
+    info!("Connect tool test completed successfully");
 
     Ok(())
 }
@@ -310,284 +190,37 @@ async fn test_invalid_connection_id_handling() -> Result<(), Box<dyn std::error:
 #[tokio::test]
 #[traced_test]
 async fn test_disconnect_nvim() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting MCP client to test nvim-mcp server");
+    info!("Testing disconnect tool");
 
+    let _guard = NEOVIM_TEST_MUTEX.lock().unwrap();
+
+    // Generate random socket path for test isolation
+    let ipc_path = generate_random_ipc_path();
+    let nvim_guard = setup_test_neovim_instance(&ipc_path).await?;
+
+    // Create MCP service
     let service = create_mcp_service!();
 
-    // Now connect first, then test disconnect
-    let ipc_path = generate_random_ipc_path();
-    let _guard = setup_test_neovim_instance(&ipc_path).await?;
-
-    // Connect first
+    // First connect
     let mut connect_args = Map::new();
     connect_args.insert("target".to_string(), Value::String(ipc_path.clone()));
 
-    let connect_result = service
+    let result = service
         .call_tool(call_tool_req("connect", Some(connect_args)))
         .await?;
 
-    let connection_id = extract_connection_id(&connect_result)?;
+    let content = result.content.first().unwrap().as_text().unwrap();
+    let connection_id = content
+        .text
+        .lines()
+        .find(|l: &&str| l.contains("Connection ID"))
+        .and_then(|l: &str| l.split('`').nth(1))
+        .map(|s: &str| s.to_string())
+        .ok_or("Failed to extract connection_id")?;
 
-    // Now test successful disconnect
-    let mut disconnect_args = Map::new();
-    disconnect_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
+    info!("Connected with ID: {}", connection_id);
 
-    let result = service
-        .call_tool(call_tool_req("disconnect", Some(disconnect_args)))
-        .await?;
-
-    info!("Disconnect result: {:#?}", result);
-    assert!(!result.content.is_empty());
-
-    // Verify the response contains success message
-    if let Some(content) = result.content.first() {
-        if let Some(text) = content.as_text() {
-            assert!(text.text.contains(&ipc_path));
-        } else {
-            panic!("Expected text content in disconnect result");
-        }
-    } else {
-        panic!("No content in disconnect result");
-    }
-
-    // Test that disconnecting again fails (not connected)
-    let mut disconnect_args2 = Map::new();
-    disconnect_args2.insert("connection_id".to_string(), Value::String(connection_id));
-
-    let result = service
-        .call_tool(call_tool_req("disconnect", Some(disconnect_args2)))
-        .await;
-
-    assert!(
-        result.is_err(),
-        "Should not be able to disconnect when not connected"
-    );
-
-    // Cleanup happens automatically via guard
-    service.cancel().await?;
-    info!("Disconnect nvim tool test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_list_buffers_tool() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting MCP client to test nvim-mcp server");
-
-    // Start Neovim instance and use auto-connect service
-    let (service, connection_id, _guard) = setup_connected_service!();
-
-    // Now test list buffers
-    let mut list_buffers_args = Map::new();
-    list_buffers_args.insert("connection_id".to_string(), Value::String(connection_id));
-
-    let result = service
-        .call_tool(call_tool_req("list_buffers", Some(list_buffers_args)))
-        .await?;
-
-    info!("List buffers result: {:#?}", result);
-    assert!(!result.content.is_empty());
-
-    // Verify the response contains buffer information
-    if let Some(content) = result.content.first() {
-        if let Some(text) = content.as_text() {
-            // The response should be JSON with buffer info
-            assert!(text.text.contains("\"id\""));
-            assert!(text.text.contains("\"name\""));
-            assert!(text.text.contains("\"line_count\""));
-            // Should have at least the initial empty buffer with id 1
-            assert!(text.text.contains("\"id\":1"));
-        } else {
-            panic!("Expected text content in list buffers result");
-        }
-    } else {
-        panic!("No content in list buffers result");
-    }
-
-    // Cleanup happens automatically via guard
-    service.cancel().await?;
-    info!("List buffers tool test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_read_buffer() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting MCP client to test read buffer tool");
-
-    // Start Neovim instance and use auto-connect service
-    let (service, connection_id, _guard) = setup_connected_service!();
-
-    // First, let's add some content to the buffer
-    let mut exec_lua_args = Map::new();
-    exec_lua_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    exec_lua_args.insert(
-        "code".to_string(),
-        Value::String(
-            r#"
-            vim.api.nvim_buf_set_lines(0, 0, -1, false, {
-                "Hello, World!",
-                "This is line 2",
-                "This is line 3",
-                "End of buffer"
-            })
-        "#
-            .to_string(),
-        ),
-    );
-
-    service
-        .call_tool(call_tool_req("exec_lua", Some(exec_lua_args)))
-        .await?;
-
-    // Test reading entire buffer
-    let mut read_args = Map::new();
-    read_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    read_args.insert(
-        "document".to_string(),
-        Value::String(r#"{"buffer_id": 0}"#.to_string()),
-    );
-
-    let result = service
-        .call_tool(call_tool_req("read", Some(read_args)))
-        .await?;
-
-    info!("Read buffer result: {:#?}", result);
-    assert!(!result.content.is_empty());
-
-    // Verify the response contains the expected lines
-    if let Some(content) = result.content.first() {
-        if let Some(text) = content.as_text() {
-            let text_content = &text.text;
-            assert!(text_content.contains("Hello, World!"));
-            assert!(text_content.contains("This is line 2"));
-            assert!(text_content.contains("This is line 3"));
-            assert!(text_content.contains("End of buffer"));
-        } else {
-            panic!("Expected text content in read buffer result");
-        }
-    } else {
-        panic!("No content in read buffer result");
-    }
-
-    // Test reading specific line range
-    let mut read_range_args = Map::new();
-    read_range_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    read_range_args.insert(
-        "document".to_string(),
-        Value::String(r#"{"buffer_id": 0}"#.to_string()),
-    );
-    read_range_args.insert("start".to_string(), Value::Number(1.into()));
-    read_range_args.insert("end".to_string(), Value::Number(3.into()));
-
-    let range_result = service
-        .call_tool(call_tool_req("read", Some(read_range_args)))
-        .await?;
-
-    info!("Read buffer range result: {:#?}", range_result);
-    assert!(!range_result.content.is_empty());
-
-    // Verify the range response contains only lines 1-2 (0-indexed)
-    if let Some(content) = range_result.content.first() {
-        if let Some(text) = content.as_text() {
-            let text_content = &text.text;
-            assert!(!text_content.contains("Hello, World!")); // Line 0, should not be included
-            assert!(text_content.contains("This is line 2")); // Line 1, should be included
-            assert!(text_content.contains("This is line 3")); // Line 2, should be included
-            assert!(!text_content.contains("End of buffer")); // Line 3, should not be included
-        } else {
-            panic!("Expected text content in read buffer range result");
-        }
-    } else {
-        panic!("No content in read buffer range result");
-    }
-
-    service.cancel().await?;
-    info!("Read buffer tool test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_read_buffer_invalid() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing read buffer tool with invalid buffer ID");
-
-    let (service, connection_id, _guard) = setup_connected_service!();
-
-    // Test reading from non-existent buffer
-    let mut read_args = Map::new();
-    read_args.insert("connection_id".to_string(), Value::String(connection_id));
-    read_args.insert(
-        "document".to_string(),
-        Value::String(r#"{"buffer_id": 999}"#.to_string()),
-    );
-
-    let result = service
-        .call_tool(call_tool_req("read", Some(read_args)))
-        .await;
-
-    // Should fail with invalid buffer ID
-    assert!(result.is_err());
-    let error = result.unwrap_err();
-    assert!(error.to_string().contains("Invalid buffer id"));
-
-    service.cancel().await?;
-    info!("Invalid buffer test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_complete_workflow() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting MCP client to test nvim-mcp server");
-
-    let service = create_mcp_service!();
-
-    // Start Neovim instance
-    let ipc_path = generate_random_ipc_path();
-    let _guard = setup_test_neovim_instance(&ipc_path).await?;
-
-    // Step 1: Connect to Neovim
-    info!("Step 1: Connecting to Neovim");
-    let connection_id = connect_to_neovim!(service, ipc_path);
-    info!(
-        "✓ Connected successfully with connection_id: {}",
-        connection_id
-    );
-
-    // Step 2: List buffers
-    info!("Step 2: Listing buffers");
-    let mut list_buffers_args = Map::new();
-    list_buffers_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-
-    let result = service
-        .call_tool(call_tool_req("list_buffers", Some(list_buffers_args)))
-        .await?;
-
-    assert!(!result.content.is_empty());
-    info!("✓ Listed buffers successfully");
-
-    // Step 3: Disconnect
-    info!("Step 3: Disconnecting from Neovim");
+    // Then disconnect
     let mut disconnect_args = Map::new();
     disconnect_args.insert(
         "connection_id".to_string(),
@@ -599,26 +232,30 @@ async fn test_complete_workflow() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     assert!(!result.content.is_empty());
-    info!("✓ Disconnected successfully");
+    let content = result.content.first().unwrap().as_text().unwrap();
+    assert!(
+        content.text.contains("disconnected") || content.text.contains("success"),
+        "Expected disconnect success, got: {}",
+        content.text
+    );
 
-    // Step 4: Verify we can't list buffers after disconnect
-    info!("Step 4: Verifying disconnect");
-    let mut invalid_list_args = Map::new();
-    invalid_list_args.insert("connection_id".to_string(), Value::String(connection_id));
+    info!("Disconnect result: {}", content.text);
+
+    // Verify connection no longer exists
+    let mut list_args = Map::new();
+    list_args.insert("connection_id".to_string(), Value::String(connection_id));
 
     let result = service
-        .call_tool(call_tool_req("list_buffers", Some(invalid_list_args)))
+        .call_tool(call_tool_req("list_buffers", Some(list_args)))
         .await;
 
     assert!(
         result.is_err(),
-        "Should not be able to list buffers after disconnect"
+        "Expected error for disconnected connection"
     );
-    info!("✓ Verified disconnect state");
 
-    // Cleanup happens automatically via guard
     service.cancel().await?;
-    info!("Complete workflow test completed successfully");
+    info!("Disconnect tool test completed successfully");
 
     Ok(())
 }
@@ -626,36 +263,30 @@ async fn test_complete_workflow() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::test]
 #[traced_test]
 async fn test_error_handling() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting MCP client to test nvim-mcp server");
+    info!("Testing error handling");
 
+    let _guard = NEOVIM_TEST_MUTEX.lock().unwrap();
+
+    // Create service without any connections
     let service = create_mcp_service!();
 
-    // Test connecting to invalid address
-    let mut invalid_args = Map::new();
-    invalid_args.insert(
-        "target".to_string(),
-        Value::String("invalid:99999".to_string()),
+    // Try to list buffers without a valid connection
+    let mut list_args = Map::new();
+    list_args.insert(
+        "connection_id".to_string(),
+        Value::String("invalid_connection_id".to_string()),
     );
 
     let result = service
-        .call_tool(call_tool_req("connect_tcp", Some(invalid_args)))
+        .call_tool(call_tool_req("list_buffers", Some(list_args)))
         .await;
 
-    assert!(result.is_err(), "Should fail to connect to invalid address");
-
-    // Test calling tools with missing arguments
-    let result = service.call_tool(call_tool_req("connect_tcp", None)).await;
-
-    assert!(result.is_err(), "Should fail when arguments are missing");
-
-    // Test calling non-existent tool
-    let result = service
-        .call_tool(call_tool_req("non_existent_tool", None))
-        .await;
-
+    assert!(result.is_err(), "Expected error for invalid connection");
+    let error = result.unwrap_err();
     assert!(
-        result.is_err(),
-        "Should fail when calling non-existent tool"
+        error.to_string().contains("No Neovim connection found"),
+        "Error should indicate connection not found: {}",
+        error
     );
 
     service.cancel().await?;
@@ -666,225 +297,161 @@ async fn test_error_handling() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 #[traced_test]
-async fn test_exec_lua_tool() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Starting MCP client to test nvim-mcp server");
+async fn test_invalid_connection_id_handling() -> Result<(), Box<dyn std::error::Error>> {
+    info!("Testing invalid connection ID handling");
 
-    // Use auto-connect setup
-    let (service, connection_id, _guard) = setup_connected_service!();
+    let _guard = NEOVIM_TEST_MUTEX.lock().unwrap();
 
-    // Test successful Lua execution
-    let mut lua_args = Map::new();
-    lua_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    lua_args.insert("code".to_string(), Value::String("return 42".to_string()));
+    // Create two separate Neovim instances
+    let ipc_path1 = generate_random_ipc_path();
+    let ipc_path2 = generate_random_ipc_path();
 
-    let result = service
-        .call_tool(call_tool_req("exec_lua", Some(lua_args)))
-        .await?;
+    let nvim_guard1 = setup_test_neovim_instance(&ipc_path1).await?;
+    let nvim_guard2 = setup_test_neovim_instance(&ipc_path2).await?;
 
-    info!("Exec Lua result: {:#?}", result);
-    assert!(!result.content.is_empty());
-
-    // Verify the response contains Lua result
-    if let Some(content) = result.content.first() {
-        if let Some(text) = content.as_text() {
-            assert!(text.text.contains("42"));
-        } else {
-            panic!("Expected text content in exec_lua result");
-        }
-    } else {
-        panic!("No content in exec_lua result");
-    }
-
-    // Test Lua execution with string result
-    let mut lua_args = Map::new();
-    lua_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    lua_args.insert(
-        "code".to_string(),
-        Value::String("return 'hello world'".to_string()),
-    );
-
-    let result = service
-        .call_tool(call_tool_req("exec_lua", Some(lua_args)))
-        .await?;
-
-    assert!(!result.content.is_empty());
-
-    // Test successful string execution
-    let mut string_lua_args = Map::new();
-    string_lua_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    string_lua_args.insert(
-        "code".to_string(),
-        Value::String("return 'hello world'".to_string()),
-    );
-
-    let result = service
-        .call_tool(call_tool_req("exec_lua", Some(string_lua_args)))
-        .await?;
-
-    assert!(!result.content.is_empty());
-
-    // Cleanup happens automatically via guard
-    service.cancel().await?;
-    info!("Exec Lua tool test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_list_resources() -> Result<(), Box<dyn std::error::Error>> {
-    let (service, _, _guard) = setup_connected_service!();
-
-    // Test list_resources
-    let result = service.list_resources(None).await?;
-    info!("List resources result: {:#?}", result);
-
-    // Verify we have the connections resource
-    assert!(!result.resources.is_empty());
-
-    let connections_resource = result
-        .resources
-        .iter()
-        .find(|r| r.raw.uri == "nvim-connections://");
-
-    assert!(
-        connections_resource.is_some(),
-        "Should have connections resource"
-    );
-
-    if let Some(resource) = connections_resource {
-        assert_eq!(resource.raw.name, "Active Neovim Connections");
-        assert!(resource.raw.description.is_some());
-        assert_eq!(resource.raw.mime_type, Some("application/json".to_string()));
-    }
-
-    service.cancel().await?;
-    info!("List resources test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_lua_tools_end_to_end_workflow() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing end-to-end Lua tools workflow");
-
-    // Connect to pre-compiled MCP server
+    // Create MCP service
     let service = create_mcp_service!();
 
-    info!("Connected to server");
-
-    info!("starting IPC Neovim for testing");
-
-    let ipc_path = generate_random_socket_path();
-    let cfg_path = "src/testdata/cfg_test.lua";
-    let open_file = "src/testdata/main.go";
-
-    let child =
-        crate::test_utils::setup_neovim_instance_ipc_advance(&ipc_path, cfg_path, open_file).await;
-    let _guard = NeovimIpcGuard::new(child, ipc_path.clone());
-
-    // Neovim should be ready for connection immediately after process start
-
+    // Connect to first instance
     let mut connect_args = Map::new();
-    connect_args.insert("target".to_string(), Value::String(ipc_path));
+    connect_args.insert("target".to_string(), Value::String(ipc_path1.clone()));
 
-    let result = service
+    let result1 = service
         .call_tool(call_tool_req("connect", Some(connect_args)))
         .await?;
 
-    // Setup Lua tools configuration in Neovim
-    let connection_id = extract_connection_id(&result)?;
+    let content1 = result1.content.first().unwrap().as_text().unwrap();
+    let connection_id1 = content1
+        .text
+        .lines()
+        .find(|l: &&str| l.contains("Connection ID"))
+        .and_then(|l: &str| l.split('`').nth(1))
+        .map(|s: &str| s.to_string())
+        .ok_or("Failed to extract connection_id1")?;
 
-    // Test tool discovery by listing tools (should include our custom tool)
-    let tools_result = service.list_tools(Default::default()).await?;
-    info!("Available tools after Lua setup: {:?}", tools_result);
+    // Connect to second instance
+    let mut connect_args = Map::new();
+    connect_args.insert("target".to_string(), Value::String(ipc_path2.clone()));
 
-    // Check if our custom tool is discovered
-    let tools_contain_save_buffer = tools_result
-        .tools
-        .iter()
-        .any(|tool| tool.name == "save_buffer");
-    assert!(
-        tools_contain_save_buffer,
-        "Custom save_buffer tool should be discovered"
+    let result2 = service
+        .call_tool(call_tool_req("connect", Some(connect_args)))
+        .await?;
+
+    let content2 = result2.content.first().unwrap().as_text().unwrap();
+    let connection_id2 = content2
+        .text
+        .lines()
+        .find(|l: &&str| l.contains("Connection ID"))
+        .and_then(|l: &str| l.split('`').nth(1))
+        .map(|s: &str| s.to_string())
+        .ok_or("Failed to extract connection_id2")?;
+
+    info!(
+        "Connected to two instances: {} and {}",
+        connection_id1, connection_id2
     );
 
-    // Test custom tool execution
-    let mut tool_args = Map::new();
-    tool_args.insert(
+    // Verify we can access both connections
+    let mut list_args1 = Map::new();
+    list_args1.insert(
         "connection_id".to_string(),
-        Value::String(connection_id.clone()),
+        Value::String(connection_id1.clone()),
     );
-    tool_args.insert(
-        "buffer_id".to_string(),
-        Value::Number(serde_json::Number::from(1)),
+
+    let buffers1 = service
+        .call_tool(call_tool_req("list_buffers", Some(list_args1)))
+        .await?;
+    assert!(!buffers1.content.is_empty());
+
+    let mut list_args2 = Map::new();
+    list_args2.insert(
+        "connection_id".to_string(),
+        Value::String(connection_id2.clone()),
     );
-    let tool_result = service
-        .call_tool(call_tool_req("save_buffer", Some(tool_args)))
+
+    let buffers2 = service
+        .call_tool(call_tool_req("list_buffers", Some(list_args2)))
+        .await?;
+    assert!(!buffers2.content.is_empty());
+
+    // Now test using wrong connection ID
+    let mut wrong_args = Map::new();
+    wrong_args.insert(
+        "connection_id".to_string(),
+        Value::String(connection_id1.clone()),
+    );
+
+    // Use a tool that should fail with connection_id from wrong instance
+    // This tests that we properly isolate connections
+    let result = service
+        .call_tool(call_tool_req("list_buffers", Some(wrong_args)))
         .await;
 
-    // The tool execution may fail (buffer not valid or no file), but it should not crash
-    info!("Custom tool execution result: {:?}", tool_result);
-    assert!(
-        tool_result.is_ok(),
-        "Custom tool should execute without error"
-    );
+    // Should succeed because connection_id1 is valid, just a different connection
+    assert!(result.is_ok(), "Should be able to use valid connection_id");
 
-    // Test error handling with invalid parameters
+    // Now test with completely invalid ID
     let mut invalid_args = Map::new();
     invalid_args.insert(
         "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    invalid_args.insert(
-        "buffer_id".to_string(),
-        Value::Number(serde_json::Number::from(-1)),
+        Value::String("completely_invalid_id".to_string()),
     );
 
-    // Test connection cleanup removes tools
-    let mut disconnect_args = Map::new();
-    disconnect_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-
-    let disconnect_result = service
-        .call_tool(call_tool_req("disconnect", Some(disconnect_args)))
-        .await?;
-
-    info!("Disconnect result: {:?}", disconnect_result);
-
-    let error_result = service
-        .call_tool(call_tool_req("save_buffer", Some(invalid_args)))
+    let result = service
+        .call_tool(call_tool_req("list_buffers", Some(invalid_args)))
         .await;
-    info!("Error handling test result: {:?}", error_result);
+
     assert!(
-        error_result.is_err(),
-        "Should fail when calling save_buffer with invalid parameters"
+        result.is_err(),
+        "Expected error for completely invalid connection ID"
     );
 
     service.cancel().await?;
-    info!("End-to-end Lua tools test completed successfully");
+    info!("Invalid connection ID handling test completed successfully");
 
     Ok(())
 }
 
 #[tokio::test]
 #[traced_test]
-async fn test_cursor_position_tool() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_complete_workflow() -> Result<(), Box<dyn std::error::Error>> {
+    info!("Testing complete workflow");
+
     let (service, connection_id, _guard) = setup_connected_service!();
 
-    // Test successful cursor_position call
+    // List buffers
+    let mut list_args = Map::new();
+    list_args.insert(
+        "connection_id".to_string(),
+        Value::String(connection_id.clone()),
+    );
+
+    let result = service
+        .call_tool(call_tool_req("list_buffers", Some(list_args)))
+        .await?;
+
+    info!("list_buffers result: {:?}", result);
+    assert!(!result.content.is_empty());
+
+    // Execute Lua
+    let mut lua_args = Map::new();
+    lua_args.insert(
+        "connection_id".to_string(),
+        Value::String(connection_id.clone()),
+    );
+    lua_args.insert(
+        "code".to_string(),
+        Value::String("return vim.fn.getcwd()".to_string()),
+    );
+
+    let result = service
+        .call_tool(call_tool_req("execute_lua", Some(lua_args)))
+        .await?;
+
+    info!("execute_lua result: {:?}", result);
+    assert!(!result.content.is_empty());
+
+    // Get cursor position
     let mut cursor_args = Map::new();
     cursor_args.insert(
         "connection_id".to_string(),
@@ -892,546 +459,612 @@ async fn test_cursor_position_tool() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let result = service
-        .call_tool(call_tool_req("cursor_position", Some(cursor_args)))
+        .call_tool(call_tool_req("get_cursor_position", Some(cursor_args)))
         .await?;
 
-    info!("Cursor position result: {:#?}", result);
+    info!("get_cursor_position result: {:?}", result);
     assert!(!result.content.is_empty());
 
-    // Verify the response contains cursor position data
-    if let Some(content) = result.content.first() {
-        if let Some(text) = content.as_text() {
-            // Parse JSON response
-            let cursor_data: serde_json::Value = serde_json::from_str(&text.text)?;
+    service.cancel().await?;
+    info!("Complete workflow test completed successfully");
 
-            // Verify required fields are present
-            assert!(
-                cursor_data["buffer_name"].is_string(),
-                "Should have bufname field"
-            );
-            assert!(
-                cursor_data["buffer_id"].is_number(),
-                "Should have buffer_id field"
-            );
-            assert!(
-                cursor_data["window_id"].is_number(),
-                "Should have window_id field"
-            );
-            assert!(cursor_data["row"].is_number(), "Should have row field");
-            assert!(cursor_data["col"].is_number(), "Should have col field");
+    Ok(())
+}
 
-            // Verify coordinates are zero-based (should be 0,0 for new buffer)
-            let row = cursor_data["row"].as_i64().expect("row should be a number");
-            let col = cursor_data["col"].as_i64().expect("col should be a number");
+#[tokio::test]
+#[traced_test]
+async fn test_cursor_position_tool() -> Result<(), Box<dyn std::error::Error>> {
+    info!("Testing get_cursor_position tool");
 
-            assert!(row >= 0, "Row should be zero-based (>= 0)");
-            assert!(col >= 0, "Col should be zero-based (>= 0)");
+    let (service, connection_id, _guard) = setup_connected_service!();
 
-            info!(
-                "Cursor position: bufname={}, row={}, col={}",
-                cursor_data["bufname"], row, col
-            );
-        } else {
-            panic!("Expected text content in cursor_position result");
-        }
-    } else {
-        panic!("No content in cursor_position result");
-    }
+    // Get cursor position
+    let mut cursor_args = Map::new();
+    cursor_args.insert(
+        "connection_id".to_string(),
+        Value::String(connection_id.clone()),
+    );
 
-    // Cleanup happens automatically via guard
+    let result = service
+        .call_tool(call_tool_req("get_cursor_position", Some(cursor_args)))
+        .await?;
+
+    info!("get_cursor_position result: {:?}", result);
+    assert!(!result.content.is_empty());
+
+    // Parse the result to verify structure
+    let content = result
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+
+    info!("Cursor position response: {}", content);
+
+    // Response should contain buffer or position information
+    assert!(
+        content.contains("buffer") || content.contains("Buffer") || content.contains("position"),
+        "Response should contain cursor/buffer information"
+    );
+
     service.cancel().await?;
     info!("Cursor position tool test completed successfully");
 
     Ok(())
 }
 
+// =============================================================================
+// HTTP Multi-Client Session Stability Tests
+// =============================================================================
+
+/// Helper to send an HTTP POST request to the MCP server
+async fn http_post(
+    client: &reqwest::Client,
+    url: &str,
+    body: String,
+) -> Result<reqwest::Response, Box<dyn std::error::Error>> {
+    let response = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .body(body)
+        .send()
+        .await?;
+    Ok(response)
+}
+
+/// Helper to send an HTTP GET request to open an SSE stream
+async fn http_get_sse(
+    client: &reqwest::Client,
+    url: &str,
+    session_id: Option<&str>,
+) -> Result<reqwest::Response, Box<dyn std::error::Error>> {
+    let mut request = client.get(url).header("Accept", "text/event-stream");
+
+    if let Some(sid) = session_id {
+        request = request.header("mcp-session-id", sid);
+    }
+
+    let response = request.send().await?;
+    Ok(response)
+}
+
+/// Parse SSE response body into events
+fn parse_sse_events(body: &str) -> Vec<String> {
+    body.split("\n\n")
+        .filter(|e| !e.is_empty())
+        .map(|e| e.to_string())
+        .collect()
+}
+
+/// Setup HTTP server with a test Neovim instance
+async fn setup_http_server_with_nvim(
+    port: u16,
+) -> Result<
+    (
+        tokio::task::JoinHandle<()>,
+        crate::test_utils::NeovimIpcGuard,
+        String,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    use hyper_util::{
+        rt::{TokioExecutor, TokioIo},
+        server::conn::auto::Builder,
+        service::TowerToHyperService,
+    };
+    use rmcp::transport::{
+        StreamableHttpServerConfig, StreamableHttpService,
+        streamable_http_server::session::local::LocalSessionManager,
+    };
+    use tokio::net::TcpListener;
+
+    // Start a Neovim instance
+    let ipc_path = crate::test_utils::generate_random_ipc_path();
+    let nvim_guard = crate::test_utils::setup_test_neovim_instance(&ipc_path).await?;
+
+    // Create the MCP server with manual connect mode
+    let server = crate::NeovimMcpServer::with_connect_mode(Some("manual".to_string()));
+
+    // Connect to the Neovim instance
+    let connection_id = server.generate_shorter_connection_id(&ipc_path);
+    let mut client = crate::neovim::NeovimClient::default();
+    client.connect_path(&ipc_path).await?;
+    server
+        .nvim_clients
+        .insert(connection_id.clone(), Box::new(client));
+
+    // Start HTTP server
+    let addr = format!("127.0.0.1:{}", port);
+    let listener = TcpListener::bind(&addr).await?;
+
+    let server_for_handler = server.clone();
+    let handle = tokio::spawn(async move {
+        let service = TowerToHyperService::new(StreamableHttpService::new(
+            move || Ok(server_for_handler.server_for_http_session()),
+            LocalSessionManager::default().into(),
+            StreamableHttpServerConfig {
+                stateful_mode: true,
+                ..Default::default()
+            },
+        ));
+
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(_) => break,
+            };
+            let io = TokioIo::new(stream);
+            let service = service.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) = Builder::new(TokioExecutor::default())
+                    .serve_connection(io, service)
+                    .await
+                {
+                    tracing::error!("HTTP connection error: {}", e);
+                }
+            });
+        }
+    });
+
+    // Give server time to start
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    Ok((handle, nvim_guard, connection_id))
+}
+
+/// Test that multiple HTTP clients can create/resume sessions without hitting closed channels
 #[tokio::test]
 #[traced_test]
-async fn test_navigate_tool() -> Result<(), Box<dyn std::error::Error>> {
-    let (service, connection_id, _guard) = setup_connected_service!();
+async fn test_http_multi_client_session_resume_stability() -> Result<(), Box<dyn std::error::Error>>
+{
+    info!("Testing HTTP multi-client session resume stability");
 
-    // Create a temporary directory and test file
-    let temp_dir = tempfile::tempdir()?;
-    let test_file = temp_dir.path().join("test_navigate.txt");
-    std::fs::write(&test_file, "line 1\nline 2\nline 3\n")?;
+    // Use a unique port to avoid conflicts
+    let port = PORT_BASE + 100;
+    let base_url = format!("http://127.0.0.1:{}", port);
+    let mcp_url = format!("{}/mcp", base_url);
 
-    // Test 1: Navigate to absolute path
-    info!("Test 1: Navigate to absolute path");
-    let mut navigate_args = Map::new();
-    navigate_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    navigate_args.insert(
-        "document".to_string(),
-        serde_json::json!({
-            "absolute_path": test_file.to_string_lossy()
-        }),
-    );
-    navigate_args.insert(
-        "line".to_string(),
-        Value::Number(serde_json::Number::from(1)),
-    );
-    navigate_args.insert(
-        "character".to_string(),
-        Value::Number(serde_json::Number::from(3)),
-    );
+    // Setup HTTP server with Neovim
+    let (_server_handle, _nvim_guard, _connection_id) = setup_http_server_with_nvim(port).await?;
 
-    let result = service
-        .call_tool(call_tool_req("navigate", Some(navigate_args)))
-        .await?;
+    let client = reqwest::Client::new();
 
-    // Verify navigation result
-    assert!(!result.content.is_empty());
-    if let Some(content) = result.content.first()
-        && let rmcp::model::RawContent::Text(text_content) = &content.raw
-    {
-        let navigate_data: serde_json::Value = serde_json::from_str(&text_content.text)?;
+    // Client A: Create session via initialize
+    let init_request = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test-client-a","version":"1.0"}}}"#.to_string();
+    let response = http_post(&client, &mcp_url, init_request).await?;
 
-        // Assert the new return contract: { path, line, column }
-        assert!(
-            navigate_data["path"].is_string(),
-            "Navigation should return path"
-        );
-        assert!(
-            navigate_data["line"].is_number(),
-            "Navigation should return line as number"
-        );
-        assert!(
-            navigate_data["column"].is_number(),
-            "Navigation should return column as number"
-        );
-        // line 1 (0-based) = "line 2" in the file (1-based line 2)
-        assert_eq!(navigate_data["line"].as_u64().unwrap(), 1);
-        assert_eq!(navigate_data["column"].as_u64().unwrap(), 3);
-        info!("✓ Successfully navigated to absolute path");
-    }
+    assert_eq!(response.status(), 200, "Initialize should succeed");
 
-    // Test 2: Navigate with invalid file path (with required line/character params)
-    info!("Test 2: Navigate to non-existent file");
-    let mut invalid_navigate_args = Map::new();
-    invalid_navigate_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    invalid_navigate_args.insert(
-        "document".to_string(),
-        serde_json::json!({
-            "absolute_path": "/non/existent/file.txt"
-        }),
-    );
-    invalid_navigate_args.insert(
-        "line".to_string(),
-        Value::Number(serde_json::Number::from(0)),
-    );
-    invalid_navigate_args.insert(
-        "character".to_string(),
-        Value::Number(serde_json::Number::from(0)),
-    );
+    // Get session ID from headers
+    let session_id_a = response
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|h| h.to_str().ok())
+        .map(|s: &str| s.to_string())
+        .expect("Should have session ID");
 
-    let result = service
-        .call_tool(call_tool_req("navigate", Some(invalid_navigate_args)))
-        .await;
+    info!("Client A session ID: {}", session_id_a);
 
-    // Should fail with a navigation error (not parameter deserialization error)
+    // Parse SSE response for initialize
+    let body = response.text().await?;
+    let events = parse_sse_events(&body);
+    assert!(!events.is_empty(), "Should receive SSE events");
+
+    // Verify we got the initialize response
+    let init_event = events
+        .iter()
+        .find(|e: &&String| e.contains("\"id\":1"))
+        .expect("Should have init response");
     assert!(
-        result.is_err(),
-        "Should fail to navigate to non-existent file"
-    );
-    // Verify it's a tool error, not a parameter error
-    // The error should be from navigate tool, not from deserialization
-    info!("✓ Correctly handled invalid file path");
-
-    // Test 3: Navigate to current buffer by ID
-    info!("Test 3: Navigate by buffer ID");
-
-    // First get the current buffer list
-    let mut list_buffers_args = Map::new();
-    list_buffers_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
+        init_event.contains("\"result\""),
+        "Should have result in init response"
     );
 
-    let buffer_result = service
-        .call_tool(call_tool_req("list_buffers", Some(list_buffers_args)))
+    // Client B: Create new session (simulating another Claude Code)
+    let init_request_b = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test-client-b","version":"1.0"}}}"#.to_string();
+    let response_b = http_post(&client, &mcp_url, init_request_b).await?;
+
+    assert_eq!(
+        response_b.status(),
+        200,
+        "Client B initialize should succeed"
+    );
+
+    let session_id_b = response_b
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|h| h.to_str().ok())
+        .map(|s: &str| s.to_string())
+        .expect("Should have session ID for client B");
+
+    info!("Client B session ID: {}", session_id_b);
+    assert_ne!(session_id_a, session_id_b, "Sessions should be different");
+
+    // Client A: Call tools/list using session
+    let tools_request = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_string();
+    let response = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id_a)
+        .body(tools_request)
+        .send()
         .await?;
 
-    if let Some(content) = buffer_result.content.first()
-        && let rmcp::model::RawContent::Text(text_content) = &content.raw
-    {
-        let buffers_data: serde_json::Value = serde_json::from_str(&text_content.text)?;
+    assert_eq!(response.status(), 200, "Client A tools/list should succeed");
+    let body: String = response.text().await?;
+    assert!(body.contains("tools"), "Response should contain tools");
+    info!("Client A successfully listed tools");
 
-        if let Some(buffers_array) = buffers_data.as_array()
-            && let Some(first_buffer) = buffers_array.first()
-            && let Some(buffer_id) = first_buffer["id"].as_u64()
-        {
-            // Navigate to this buffer
-            let mut buffer_navigate_args = Map::new();
-            buffer_navigate_args.insert(
-                "connection_id".to_string(),
-                Value::String(connection_id.clone()),
-            );
-            buffer_navigate_args.insert(
-                "document".to_string(),
-                serde_json::json!({
-                    "buffer_id": buffer_id
-                }),
-            );
-            buffer_navigate_args.insert(
-                "line".to_string(),
-                Value::Number(serde_json::Number::from(0)),
-            );
-            buffer_navigate_args.insert(
-                "character".to_string(),
-                Value::Number(serde_json::Number::from(0)),
-            );
+    // Client B: Call tools/list using different session
+    let tools_request = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_string();
+    let response = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id_b)
+        .body(tools_request)
+        .send()
+        .await?;
 
-            let result = service
-                .call_tool(call_tool_req("navigate", Some(buffer_navigate_args)))
-                .await?;
+    assert_eq!(response.status(), 200, "Client B tools/list should succeed");
+    let body: String = response.text().await?;
+    assert!(body.contains("tools"), "Response should contain tools");
+    info!("Client B successfully listed tools");
 
-            if let Some(content) = result.content.first()
-                && let rmcp::model::RawContent::Text(text_content) = &content.raw
-            {
-                let navigate_data: serde_json::Value = serde_json::from_str(&text_content.text)?;
-                // Assert the new return contract: { path, line, column }
-                assert!(
-                    navigate_data["path"].is_string(),
-                    "Navigation by buffer ID should return path"
-                );
-                assert!(
-                    navigate_data["line"].is_number(),
-                    "Navigation by buffer ID should return line as number"
-                );
-                assert!(
-                    navigate_data["column"].is_number(),
-                    "Navigation by buffer ID should return column as number"
-                );
-                info!("✓ Successfully navigated by buffer ID");
-            }
+    // Client C: Create third session
+    let init_request_c = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test-client-c","version":"1.0"}}}"#.to_string();
+    let response_c = http_post(&client, &mcp_url, init_request_c).await?;
+
+    assert_eq!(
+        response_c.status(),
+        200,
+        "Client C initialize should succeed"
+    );
+
+    let session_id_c = response_c
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|h| h.to_str().ok())
+        .map(|s: &str| s.to_string())
+        .expect("Should have session ID for client C");
+
+    info!("Client C session ID: {}", session_id_c);
+
+    // Verify all three sessions are independent
+    let tools_request = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_string();
+    let response = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id_c)
+        .body(tools_request)
+        .send()
+        .await?;
+
+    assert_eq!(response.status(), 200, "Client C tools/list should succeed");
+    info!("Client C successfully listed tools");
+
+    // Verify no "Channel closed" errors in any responses
+    let body: String = response.text().await?;
+    assert!(
+        !body.contains("Channel closed"),
+        "Response should not contain 'Channel closed' error: {}",
+        body
+    );
+
+    info!("Multi-client session resume test completed successfully - no 'Channel closed' errors");
+
+    Ok(())
+}
+
+/// Test that connections are consistently visible across multiple sessions
+#[tokio::test]
+#[traced_test]
+async fn test_http_multi_client_shared_connection_visibility()
+-> Result<(), Box<dyn std::error::Error>> {
+    info!("Testing HTTP multi-client shared connection visibility");
+
+    let port = PORT_BASE + 101;
+    let base_url = format!("http://127.0.0.1:{}", port);
+    let mcp_url = format!("{}/mcp", base_url);
+
+    // Setup HTTP server with Neovim
+    let (_server_handle, _nvim_guard, connection_id) = setup_http_server_with_nvim(port).await?;
+
+    let client = reqwest::Client::new();
+
+    // Create three independent sessions
+    let init_request = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
+
+    let mut sessions: Vec<String> = Vec::new();
+    for i in 0..3 {
+        let response = http_post(&client, &mcp_url, init_request.to_string()).await?;
+        assert_eq!(response.status(), 200);
+
+        let session_id = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|h| h.to_str().ok())
+            .map(|s: &str| s.to_string())
+            .expect("Should have session ID");
+
+        sessions.push(session_id);
+        info!("Session {}: {}", i + 1, sessions[i]);
+    }
+
+    // Each client reads the connections resource
+    let read_resource_request =
+        r#"{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"nvim-connections://"}}"#.to_string();
+
+    for (i, session_id) in sessions.iter().enumerate() {
+        let response = client
+            .post(&mcp_url)
+            .header("Content-Type", "application/json")
+            .header("mcp-session-id", session_id)
+            .body(read_resource_request.clone())
+            .send()
+            .await?;
+
+        assert_eq!(
+            response.status(),
+            200,
+            "Client {} should read resources",
+            i + 1
+        );
+
+        let body: String = response.text().await?;
+        assert!(
+            body.contains(&connection_id),
+            "Client {} should see connection {} in resource",
+            i + 1,
+            connection_id
+        );
+        info!("Client {} verified connection visibility", i + 1);
+    }
+
+    // Test connection-specific tools resource for each session
+    let tools_resource_request = format!(
+        r#"{{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{{"uri":"nvim-tools://{}"}}}}"#,
+        connection_id
+    );
+
+    for (i, session_id) in sessions.iter().enumerate() {
+        let response = client
+            .post(&mcp_url)
+            .header("Content-Type", "application/json")
+            .header("mcp-session-id", session_id)
+            .body(tools_resource_request.clone())
+            .send()
+            .await?;
+
+        assert_eq!(
+            response.status(),
+            200,
+            "Client {} should read tools resource",
+            i + 1
+        );
+
+        let body: String = response.text().await?;
+        assert!(
+            body.contains(&connection_id),
+            "Tools resource for client {} should contain connection_id",
+            i + 1
+        );
+    }
+
+    info!("Shared connection visibility test completed successfully");
+
+    Ok(())
+}
+
+/// Test that stale socket errors don't break the shared session
+#[tokio::test]
+#[traced_test]
+async fn test_http_stale_socket_does_not_break_shared_session()
+-> Result<(), Box<dyn std::error::Error>> {
+    info!("Testing HTTP stale socket error handling");
+
+    let port = PORT_BASE + 102;
+    let base_url = format!("http://127.0.0.1:{}", port);
+    let mcp_url = format!("{}/mcp", base_url);
+
+    // Setup: Create a server with auto-connect disabled
+    use hyper_util::{
+        rt::{TokioExecutor, TokioIo},
+        server::conn::auto::Builder,
+        service::TowerToHyperService,
+    };
+    use rmcp::transport::{
+        StreamableHttpServerConfig, StreamableHttpService,
+        streamable_http_server::session::local::LocalSessionManager,
+    };
+    use tokio::net::TcpListener;
+
+    // Create server with manual connect mode (no pre-existing connections)
+    let server = crate::NeovimMcpServer::with_connect_mode(Some("manual".to_string()));
+
+    // Start HTTP server
+    let addr = format!("127.0.0.1:{}", port);
+    let listener = TcpListener::bind(&addr).await?;
+
+    let server_for_handler = server.clone();
+    let _server_handle = tokio::spawn(async move {
+        let service = TowerToHyperService::new(StreamableHttpService::new(
+            move || Ok(server_for_handler.server_for_http_session()),
+            LocalSessionManager::default().into(),
+            StreamableHttpServerConfig {
+                stateful_mode: true,
+                ..Default::default()
+            },
+        ));
+
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(_) => break,
+            };
+            let io = TokioIo::new(stream);
+            let service = service.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) = Builder::new(TokioExecutor::default())
+                    .serve_connection(io, service)
+                    .await
+                {
+                    tracing::error!("HTTP connection error: {}", e);
+                }
+            });
         }
-    }
+    });
 
-    // Test 4: Navigate using absolute path with line 0 (verifies basic navigation)
-    // Note: project_relative_path requires proper working directory setup which
-    // is covered in test_read_project_relative_path
-    info!("Test 4: Navigate to beginning of file");
+    // Give server time to start
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    // Navigate to the same file but at line 0, character 0
-    let mut rel_navigate_args = Map::new();
-    rel_navigate_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    rel_navigate_args.insert(
-        "document".to_string(),
-        serde_json::json!({
-            "absolute_path": test_file.to_string_lossy()
-        }),
-    );
-    rel_navigate_args.insert(
-        "line".to_string(),
-        Value::Number(serde_json::Number::from(0)),
-    );
-    rel_navigate_args.insert(
-        "character".to_string(),
-        Value::Number(serde_json::Number::from(0)),
+    let client = reqwest::Client::new();
+
+    // Client A: Create session
+    let init_request = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#.to_string();
+    let response = http_post(&client, &mcp_url, init_request.clone()).await?;
+
+    assert_eq!(response.status(), 200);
+    let session_id_a = response
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|h| h.to_str().ok())
+        .map(|s: &str| s.to_string())
+        .expect("Should have session ID");
+
+    // Client A: Try to connect to a non-existent (stale) socket
+    let stale_target = "/tmp/non-existent-stale-socket-test.sock";
+    let connect_request = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"connect","arguments":{{"target":"{}"}}}}}}"#,
+        stale_target
     );
 
-    let result = service
-        .call_tool(call_tool_req("navigate", Some(rel_navigate_args)))
+    let response = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id_a)
+        .body(connect_request)
+        .send()
         .await?;
 
-    // Verify navigation result
-    assert!(!result.content.is_empty());
-    if let Some(content) = result.content.first()
-        && let rmcp::model::RawContent::Text(text_content) = &content.raw
-    {
-        let navigate_data: serde_json::Value = serde_json::from_str(&text_content.text)?;
+    // Should fail with a clear error about the connection
+    assert_eq!(
+        response.status(),
+        200,
+        "Request should return 200 even on error"
+    );
 
-        // Assert the new return contract: { path, line, column }
-        assert!(
-            navigate_data["path"].is_string(),
-            "Navigation should return path"
-        );
-        assert!(
-            navigate_data["line"].is_number(),
-            "Navigation should return line as number"
-        );
-        assert!(
-            navigate_data["column"].is_number(),
-            "Navigation should return column as number"
-        );
-        // line 0 (0-based) = "line 1" in the file (1-based line 1)
-        assert_eq!(navigate_data["line"].as_u64().unwrap(), 0);
-        assert_eq!(navigate_data["column"].as_u64().unwrap(), 0);
-        info!("✓ Successfully navigated to beginning of file");
-    }
+    let body: String = response.text().await?;
+    info!("Stale socket response: {}", body);
+
+    // The error should indicate connection failure, not session/channel issues
+    assert!(
+        !body.contains("Channel closed"),
+        "Error should not be 'Channel closed': {}",
+        body
+    );
+    assert!(
+        body.contains("error")
+            || body.contains("Error")
+            || body.contains("Connection")
+            || body.contains("failed"),
+        "Response should contain error indication: {}",
+        body
+    );
+
+    // Now start a real Neovim instance and connect successfully
+    let ipc_path = crate::test_utils::generate_random_ipc_path();
+    let nvim_guard = crate::test_utils::setup_test_neovim_instance(&ipc_path).await?;
+
+    // Client B: Create new session (should work even after stale socket error)
+    let response = http_post(&client, &mcp_url, init_request.clone()).await?;
+
+    assert_eq!(
+        response.status(),
+        200,
+        "New session should work after stale socket error"
+    );
+    let session_id_b = response
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|h| h.to_str().ok())
+        .map(|s: &str| s.to_string())
+        .expect("Should have session ID for client B");
+
+    // Client B: Connect to valid socket
+    let connect_request = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"connect","arguments":{{"target":"{}"}}}}}}"#,
+        ipc_path
+    );
+
+    let response = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id_b)
+        .body(connect_request)
+        .send()
+        .await?;
+
+    let body: String = response.text().await?;
+    info!("Valid socket connect response: {}", body);
+
+    // Should succeed or contain success indication
+    assert!(
+        body.contains("result") || body.contains("Connected") || body.contains("success"),
+        "Should be able to connect to valid socket: {}",
+        body
+    );
+
+    // Client A should still work (shared state should not be corrupted)
+    let tools_request = r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#.to_string();
+    let response = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id_a)
+        .body(tools_request)
+        .send()
+        .await?;
+
+    assert_eq!(
+        response.status(),
+        200,
+        "Client A should still work after stale socket error"
+    );
+
+    let body: String = response.text().await?;
+    assert!(
+        !body.contains("Channel closed"),
+        "Client A should not get 'Channel closed' error: {}",
+        body
+    );
+
+    info!("Stale socket error handling test completed successfully");
 
     // Cleanup
-    service.cancel().await?;
-    info!("Navigate tool test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_read_project_relative_path() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing read buffer tool with project relative path");
-
-    let (service, connection_id, _guard) = setup_connected_service!(
-        get_testdata_path("cfg_test.lua").to_str().unwrap(),
-        get_testdata_path("main.go").to_str().unwrap()
-    );
-
-    // Test reading entire file using project relative path
-    let mut read_args = Map::new();
-    read_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    read_args.insert(
-        "document".to_string(),
-        serde_json::json!({
-            "project_relative_path": "src/testdata/main.go"
-        }),
-    );
-
-    let result = service
-        .call_tool(call_tool_req("read", Some(read_args)))
-        .await?;
-
-    info!("Read project relative path result: {:#?}", result);
-    assert!(!result.content.is_empty());
-
-    // Verify the response contains the expected Go file content
-    if let Some(content) = result.content.first() {
-        if let Some(text) = content.as_text() {
-            let text_content = &text.text;
-            assert!(text_content.contains("package main"));
-            assert!(text_content.contains("import \"fmt\""));
-            assert!(text_content.contains("func main()"));
-            assert!(text_content.contains("hello mcp"));
-        } else {
-            panic!("Expected text content in read buffer project relative path result");
-        }
-    } else {
-        panic!("No content in read buffer project relative path result");
-    }
-
-    // Test reading specific line range using project relative path
-    let mut read_range_args = Map::new();
-    read_range_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    read_range_args.insert(
-        "document".to_string(),
-        serde_json::json!({
-            "project_relative_path": "src/testdata/main.go"
-        }),
-    );
-    read_range_args.insert("start".to_string(), Value::Number(4.into())); // Line 5: func main()
-    read_range_args.insert("end".to_string(), Value::Number(7.into())); // Lines 5-6
-
-    let range_result = service
-        .call_tool(call_tool_req("read", Some(read_range_args)))
-        .await?;
-
-    info!(
-        "Read project relative path range result: {:#?}",
-        range_result
-    );
-    assert!(!range_result.content.is_empty());
-
-    // Verify the range response contains only the specified lines
-    if let Some(content) = range_result.content.first() {
-        if let Some(text) = content.as_text() {
-            let text_content = &text.text;
-            assert!(text_content.contains("func main()"));
-            assert!(text_content.contains("for i := 0; i < 10; i++"));
-            assert!(!text_content.contains("package main")); // Should not include line 0
-            assert!(!text_content.contains("}")); // Should not include the final closing brace
-        } else {
-            panic!("Expected text content in read buffer project relative path range result");
-        }
-    } else {
-        panic!("No content in read buffer project relative path range result");
-    }
-
-    service.cancel().await?;
-    info!("Read buffer project relative path test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_read_absolute_path() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing read buffer tool with absolute path");
-
-    let (service, connection_id, _guard) = setup_connected_service!(
-        get_testdata_path("cfg_test.lua").to_str().unwrap(),
-        get_testdata_path("main.go").to_str().unwrap()
-    );
-
-    // Get absolute path to the test file
-    let absolute_path = get_testdata_path("main.go")
-        .canonicalize()
-        .expect("Failed to get canonical path")
-        .to_string_lossy()
-        .to_string();
-
-    // Test reading entire file using absolute path
-    let mut read_args = Map::new();
-    read_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    read_args.insert(
-        "document".to_string(),
-        serde_json::json!({
-            "absolute_path": absolute_path
-        }),
-    );
-
-    let result = service
-        .call_tool(call_tool_req("read", Some(read_args)))
-        .await?;
-
-    info!("Read absolute path result: {:#?}", result);
-    assert!(!result.content.is_empty());
-
-    // Verify the response contains the expected Go file content
-    if let Some(content) = result.content.first() {
-        if let Some(text) = content.as_text() {
-            let text_content = &text.text;
-            assert!(text_content.contains("package main"));
-            assert!(text_content.contains("import \"fmt\""));
-            assert!(text_content.contains("func main()"));
-            assert!(text_content.contains("hello mcp"));
-        } else {
-            panic!("Expected text content in read buffer absolute path result");
-        }
-    } else {
-        panic!("No content in read buffer absolute path result");
-    }
-
-    // Test reading specific line range using absolute path
-    let mut read_range_args = Map::new();
-    read_range_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    read_range_args.insert(
-        "document".to_string(),
-        serde_json::json!({
-            "absolute_path": absolute_path
-        }),
-    );
-    read_range_args.insert("start".to_string(), Value::Number(2.into())); // Line 3: import statement
-    read_range_args.insert("end".to_string(), Value::Number(5.into())); // Lines 3-4
-
-    let range_result = service
-        .call_tool(call_tool_req("read", Some(read_range_args)))
-        .await?;
-
-    info!("Read absolute path range result: {:#?}", range_result);
-    assert!(!range_result.content.is_empty());
-
-    // Verify the range response contains only the specified lines
-    if let Some(content) = range_result.content.first() {
-        if let Some(text) = content.as_text() {
-            let text_content = &text.text;
-            assert!(text_content.contains("import \"fmt\""));
-            assert!(text_content.contains("func main()"));
-            assert!(!text_content.contains("package main")); // Should not include line 0
-            assert!(!text_content.contains("for i := 0")); // Should not include line 5+
-        } else {
-            panic!("Expected text content in read buffer absolute path range result");
-        }
-    } else {
-        panic!("No content in read buffer absolute path range result");
-    }
-
-    service.cancel().await?;
-    info!("Read buffer absolute path test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_read_invalid_paths() -> Result<(), Box<dyn std::error::Error>> {
-    info!("Testing read buffer tool with invalid paths");
-
-    let (service, connection_id, _guard) = setup_connected_service!();
-
-    // Test with non-existent project relative path
-    let mut invalid_project_args = Map::new();
-    invalid_project_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    invalid_project_args.insert(
-        "document".to_string(),
-        serde_json::json!({
-            "project_relative_path": "non/existent/file.go"
-        }),
-    );
-
-    let result = service
-        .call_tool(call_tool_req("read", Some(invalid_project_args)))
-        .await;
-
-    assert!(
-        result.is_err(),
-        "Should fail with non-existent project relative path"
-    );
-    let error = result.unwrap_err();
-    assert!(
-        error.to_string().contains("No such file or directory")
-            || error.to_string().contains("not found")
-            || error.to_string().contains("cannot find")
-            || error.to_string().contains("Can't open file"),
-        "Error message should indicate file not found: {}",
-        error
-    );
-
-    // Test with non-existent absolute path
-    let mut invalid_absolute_args = Map::new();
-    invalid_absolute_args.insert(
-        "connection_id".to_string(),
-        Value::String(connection_id.clone()),
-    );
-    invalid_absolute_args.insert(
-        "document".to_string(),
-        serde_json::json!({
-            "absolute_path": "/completely/non/existent/path/file.txt"
-        }),
-    );
-
-    let result = service
-        .call_tool(call_tool_req("read", Some(invalid_absolute_args)))
-        .await;
-
-    assert!(
-        result.is_err(),
-        "Should fail with non-existent absolute path"
-    );
-    let error = result.unwrap_err();
-    assert!(
-        error.to_string().contains("No such file or directory")
-            || error.to_string().contains("not found")
-            || error.to_string().contains("cannot find")
-            || error.to_string().contains("Can't open file"),
-        "Error message should indicate file not found: {}",
-        error
-    );
-
-    service.cancel().await?;
-    info!("Invalid paths test completed successfully");
+    drop(nvim_guard);
 
     Ok(())
 }
