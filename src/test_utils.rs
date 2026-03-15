@@ -12,7 +12,6 @@ use tokio::net::UnixStream;
 use tokio::net::windows::named_pipe::NamedPipeClient;
 
 use crate::neovim::NeovimClient;
-use crate::neovim::NeovimClientTrait;
 
 // Constants
 pub const HOST: &str = "127.0.0.1";
@@ -418,55 +417,16 @@ pub async fn setup_auto_connected_client_ipc(
         panic!("Failed to connect to Neovim: {result:?}");
     }
 
-    // Auto-setup: setup autocmd (like auto-connect would do)
-    let setup_result = client.setup_autocmd().await;
-    if setup_result.is_err() {
-        let _guard = NeovimIpcGuard::new(child, ipc_path.to_string());
-        panic!("Failed to setup autocmd: {setup_result:?}");
-    }
-
     let guard = NeovimIpcGuard::new(child, ipc_path.to_string());
     (client, guard)
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct AutoConnectAdvanceOptions {
-    pub wait_for_diagnostics: bool,
-    pub timeout_ms: u64,
-}
-
-impl Default for AutoConnectAdvanceOptions {
-    fn default() -> Self {
-        Self {
-            wait_for_diagnostics: true,
-            timeout_ms: 15000,
-        }
-    }
-}
-
 /// Setup connected client with advanced configuration and auto-setup
-/// This mimics auto-connect behavior with diagnostics
+/// This mimics auto-connect behavior
 pub async fn setup_auto_connected_client_ipc_advance(
     ipc_path: &str,
     config_path: &str,
     open_file: &str,
-) -> (NeovimClient<tokio::net::UnixStream>, NeovimIpcGuard) {
-    setup_auto_connected_client_ipc_advance_with_options(
-        ipc_path,
-        config_path,
-        open_file,
-        AutoConnectAdvanceOptions::default(),
-    )
-    .await
-}
-
-/// Setup connected client with advanced configuration and auto-setup.
-/// This optionally waits for diagnostics.
-pub async fn setup_auto_connected_client_ipc_advance_with_options(
-    ipc_path: &str,
-    config_path: &str,
-    open_file: &str,
-    opts: AutoConnectAdvanceOptions,
 ) -> (NeovimClient<tokio::net::UnixStream>, NeovimIpcGuard) {
     let child = setup_neovim_instance_ipc_advance(ipc_path, config_path, open_file).await;
     let mut client = NeovimClient::default();
@@ -475,20 +435,6 @@ pub async fn setup_auto_connected_client_ipc_advance_with_options(
     if result.is_err() {
         let _guard = NeovimIpcGuard::new(child, ipc_path.to_string());
         panic!("Failed to connect to Neovim: {result:?}");
-    }
-
-    let setup_result = client.setup_autocmd().await;
-    if setup_result.is_err() {
-        let _guard = NeovimIpcGuard::new(child, ipc_path.to_string());
-        panic!("Failed to setup autocmd: {setup_result:?}");
-    }
-
-    if opts.wait_for_diagnostics {
-        let diagnostics_result = client.wait_for_diagnostics(None, opts.timeout_ms).await;
-        if diagnostics_result.is_err() {
-            let _guard = NeovimIpcGuard::new(child, ipc_path.to_string());
-            panic!("Failed to wait for diagnostics: {diagnostics_result:?}");
-        }
     }
 
     let guard = NeovimIpcGuard::new(child, ipc_path.to_string());

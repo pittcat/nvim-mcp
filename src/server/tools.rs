@@ -68,7 +68,6 @@ impl NeovimMcpServer {
             get_targets,
             connect,
             read,
-            buffer_diagnostics,
         }
     }
 

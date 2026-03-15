@@ -37,28 +37,12 @@ pub trait NeovimClientTrait: Sync {
     /// Execute Lua code in Neovim
     async fn execute_lua(&self, code: &str) -> Result<Value, NeovimError>;
 
-    /// Set up diagnostics changed autocmd
-    async fn setup_autocmd(&self) -> Result<(), NeovimError>;
-
     /// Wait for a specific notification with timeout
     async fn wait_for_notification(
         &self,
         notification_name: &str,
         timeout_ms: u64,
     ) -> Result<Notification, NeovimError>;
-
-    /// Wait for diagnostics to be available for a specific buffer or workspace
-    async fn wait_for_diagnostics(
-        &self,
-        buffer_id: Option<u64>,
-        timeout_ms: u64,
-    ) -> Result<Vec<Diagnostic>, NeovimError>;
-
-    /// Get diagnostics for a specific buffer
-    async fn get_buffer_diagnostics(&self, buffer_id: u64) -> Result<Vec<Diagnostic>, NeovimError>;
-
-    /// Get diagnostics for the entire workspace
-    async fn get_workspace_diagnostics(&self) -> Result<Vec<Diagnostic>, NeovimError>;
 
     /// Navigate to a specific position in a document
     async fn navigate(
@@ -276,20 +260,6 @@ where
     }
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct Diagnostic {
-    pub message: String,
-    pub code: Option<serde_json::Value>,
-    pub severity: u8,
-    pub lnum: u64,
-    pub col: u64,
-    pub source: String,
-    pub bufnr: u64,
-    pub end_lnum: u64,
-    pub end_col: u64,
-    pub namespace: u64,
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BufferInfo {
     pub id: u64,
@@ -470,14 +440,8 @@ impl ReadDocumentParams {
 }
 
 /// Configuration for Neovim client operations
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NeovimClientConfig {}
-
-impl Default for NeovimClientConfig {
-    fn default() -> Self {
-        Self {}
-    }
-}
 
 pub struct NeovimClient<T>
 where
@@ -550,10 +514,10 @@ impl<T> From<NvimExecuteLuaResult<T>> for Result<T, NeovimError> {
 impl NeovimClient<Connection> {
     #[instrument(skip(self))]
     pub async fn connect_path(&mut self, path: &str) -> Result<(), NeovimError> {
-        if self.connection.is_some() {
+        if let Some(ref conn) = self.connection {
             return Err(NeovimError::Connection(format!(
                 "Already connected to {}. Disconnect first.",
-                self.connection.as_ref().unwrap().target()
+                conn.target()
             )));
         }
 
@@ -587,10 +551,10 @@ impl NeovimClient<Connection> {
 impl NeovimClient<TcpStream> {
     #[instrument(skip(self))]
     pub async fn connect_tcp(&mut self, address: &str) -> Result<(), NeovimError> {
-        if self.connection.is_some() {
+        if let Some(ref conn) = self.connection {
             return Err(NeovimError::Connection(format!(
                 "Already connected to {}. Disconnect first.",
-                self.connection.as_ref().unwrap().target()
+                conn.target()
             )));
         }
 
@@ -630,47 +594,6 @@ where
     pub fn with_config(mut self, config: NeovimClientConfig) -> Self {
         self.config = config;
         self
-    }
-
-    #[instrument(skip(self))]
-    async fn get_diagnostics(
-        &self,
-        buffer_id: Option<u64>,
-    ) -> Result<Vec<Diagnostic>, NeovimError> {
-        let conn = self.connection.as_ref().ok_or_else(|| {
-            NeovimError::Connection("Not connected to any Neovim instance".to_string())
-        })?;
-
-        let args = if let Some(id) = buffer_id {
-            vec![Value::from(id)]
-        } else {
-            vec![]
-        };
-
-        match conn
-            .nvim
-            .execute_lua("return vim.json.encode(vim.diagnostic.get(...))", args)
-            .await
-        {
-            Ok(diagnostics) => {
-                let diagnostics: Vec<Diagnostic> =
-                    match serde_json::from_str(diagnostics.as_str().unwrap()) {
-                        Ok(d) => d,
-                        Err(e) => {
-                            debug!("Failed to parse diagnostics: {}", e);
-                            return Err(NeovimError::Api(format!(
-                                "Failed to parse diagnostics: {e}"
-                            )));
-                        }
-                    };
-                debug!("Found {} diagnostics", diagnostics.len());
-                Ok(diagnostics)
-            }
-            Err(e) => {
-                debug!("Failed to get diagnostics: {}", e);
-                Err(NeovimError::Api(format!("Failed to get diagnostics: {e}")))
-            }
-        }
     }
 
     /// Get project root directory from Neovim (working directory)
@@ -843,56 +766,6 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn setup_autocmd(&self) -> Result<(), NeovimError> {
-        debug!("Setting up autocmd");
-
-        let conn = self.connection.as_ref().ok_or_else(|| {
-            NeovimError::Connection("Not connected to any Neovim instance".to_string())
-        })?;
-
-        let channel_id = conn
-            .nvim
-            .get_api_info()
-            .await
-            .map_err(|e| NeovimError::Api(format!("Failed to get RPC channel id: {e}")))?
-            .first()
-            .and_then(Value::as_i64)
-            .ok_or_else(|| {
-                NeovimError::Api(
-                    "Failed to parse RPC channel id from nvim_get_api_info".to_string(),
-                )
-            })?;
-
-        match conn
-            .nvim
-            .exec_lua(
-                include_str!("lua/setup_autocmd.lua"),
-                vec![Value::from(channel_id)],
-            )
-            .await
-        {
-            Ok(_) => {
-                debug!("autocmd set up successfully");
-                Ok(())
-            }
-            Err(e) => {
-                debug!("Failed to set up autocmd: {}", e);
-                Err(NeovimError::Api(format!("Failed to set up autocmd: {e}")))
-            }
-        }
-    }
-
-    #[instrument(skip(self))]
-    async fn get_buffer_diagnostics(&self, buffer_id: u64) -> Result<Vec<Diagnostic>, NeovimError> {
-        self.get_diagnostics(Some(buffer_id)).await
-    }
-
-    #[instrument(skip(self))]
-    async fn get_workspace_diagnostics(&self) -> Result<Vec<Diagnostic>, NeovimError> {
-        self.get_diagnostics(None).await
-    }
-
-    #[instrument(skip(self))]
     async fn wait_for_notification(
         &self,
         notification_name: &str,
@@ -956,43 +829,6 @@ where
                 Err(NeovimError::Api(format!("Failed to navigate: {e}")))
             }
         }
-    }
-
-    #[instrument(skip(self))]
-    async fn wait_for_diagnostics(
-        &self,
-        buffer_id: Option<u64>,
-        timeout_ms: u64,
-    ) -> Result<Vec<Diagnostic>, NeovimError> {
-        debug!(
-            "Waiting for diagnostics for buffer {:?} with timeout: {}ms",
-            buffer_id, timeout_ms
-        );
-
-        // First try to get diagnostics immediately
-        match self.get_diagnostics(buffer_id).await {
-            Ok(diagnostics) if !diagnostics.is_empty() => {
-                debug!("Found {} diagnostics immediately", diagnostics.len());
-                return Ok(diagnostics);
-            }
-            Ok(_) => {
-                // No diagnostics found, wait for diagnostic notification
-                debug!("No diagnostics found, waiting for notification");
-            }
-            Err(e) => {
-                debug!("Error getting diagnostics: {}, waiting for notification", e);
-            }
-        }
-
-        // Wait for diagnostic notification
-        let notification = self
-            .wait_for_notification("NVIM_MCP_DiagnosticsChanged", timeout_ms)
-            .await?;
-
-        debug!("Received diagnostics notification: {:?}", notification);
-
-        // After notification, try to get diagnostics again
-        self.get_diagnostics(buffer_id).await
     }
 
     #[instrument(skip(self))]

@@ -51,9 +51,6 @@ establishment phase:
   - Notes: Supports reading from buffer IDs, project-relative paths, and
     absolute file paths with optional line range specification
 
-- **`buffer_diagnostics`**: Get diagnostics for a specific buffer
-  - Parameters: `connection_id` (string), `id` (number) - Buffer ID
-
 ## Code Execution
 
 - **`exec_lua`**: Execute Lua code in Neovim

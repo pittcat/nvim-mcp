@@ -66,12 +66,12 @@ pre-commit run --all-files
   connection management using DashMap for thread-safe concurrent access
 - **Neovim Client** (`src/neovim/client.rs`): Handles communication with
   Neovim instances via nvim-rs msgpack-rpc
-- **Tool System** (`src/server/tools.rs`): 33 MCP tools for LSP operations,
-  file navigation, and diagnostics
+- **Tool System** (`src/server/tools.rs`): 32 MCP tools for file operations
+  and navigation
 - **Hybrid Tool Router** (`src/server/hybrid_router.rs`): Combines static tools
   (compiled Rust) with dynamic tools (Lua-discovered from Neovim)
 - **Resource System** (`src/server/resources.rs`): Connection-scoped
-  diagnostic resources with URI schemes like `nvim-diagnostics://`
+  resources with URI schemes like `nvim-connections://` and `nvim-tools://`
 - **Transport Layer**: Supports both stdio and HTTP server transports via rmcp
 
 ### Key Architectural Patterns

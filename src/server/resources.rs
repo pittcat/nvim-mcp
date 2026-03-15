@@ -1,4 +1,3 @@
-use regex::Regex;
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     model::*,
@@ -45,7 +44,7 @@ impl ServerHandler for NeovimMcpServer {
         _request: Option<PaginatedRequestParams>,
         _: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        debug!("Listing available diagnostic resources");
+        debug!("Listing available resources");
 
         let mut resources = vec![
             new_resource(
@@ -63,15 +62,6 @@ impl ServerHandler for NeovimMcpServer {
         // Add connection-specific resources
         for connection_entry in self.nvim_clients.iter() {
             let connection_id = connection_entry.key().clone();
-
-            // Add diagnostic resource
-            resources.push(new_resource(
-                &format!("nvim-diagnostics://{connection_id}/workspace"),
-                &format!("Workspace Diagnostics ({connection_id})"),
-                Some(&format!(
-                    "Diagnostic messages for connection {connection_id}"
-                )),
-            ));
 
             // Add connection-specific tools resource
             resources.push(new_resource(
@@ -223,70 +213,6 @@ impl ServerHandler for NeovimMcpServer {
                         uri,
                     )],
                 })
-            }
-            uri if uri.starts_with("nvim-diagnostics://") => {
-                // Parse connection_id from URI pattern using regex
-                let connection_diagnostics_regex = Regex::new(r"nvim-diagnostics://([^/]+)/(.+)")
-                    .map_err(|e| {
-                    McpError::internal_error(
-                        "Failed to compile regex",
-                        Some(json!({"error": e.to_string()})),
-                    )
-                })?;
-
-                if let Some(captures) = connection_diagnostics_regex.captures(uri) {
-                    let connection_id = captures.get(1).unwrap().as_str();
-                    let resource_type = captures.get(2).unwrap().as_str();
-
-                    let client = self.get_connection(connection_id)?;
-
-                    match resource_type {
-                        "workspace" => {
-                            let diagnostics = client.get_workspace_diagnostics().await?;
-                            Ok(ReadResourceResult {
-                                contents: vec![ResourceContents::text(
-                                    serde_json::to_string_pretty(&diagnostics).map_err(|e| {
-                                        McpError::internal_error(
-                                            "Failed to serialize workspace diagnostics",
-                                            Some(json!({"error": e.to_string()})),
-                                        )
-                                    })?,
-                                    uri,
-                                )],
-                            })
-                        }
-                        path if path.starts_with("buffer/") => {
-                            let buffer_id = path
-                                .strip_prefix("buffer/")
-                                .and_then(|s| s.parse::<u64>().ok())
-                                .ok_or_else(|| {
-                                    McpError::invalid_params("Invalid buffer ID", None)
-                                })?;
-
-                            let diagnostics = client.get_buffer_diagnostics(buffer_id).await?;
-                            Ok(ReadResourceResult {
-                                contents: vec![ResourceContents::text(
-                                    serde_json::to_string_pretty(&diagnostics).map_err(|e| {
-                                        McpError::internal_error(
-                                            "Failed to serialize buffer diagnostics",
-                                            Some(json!({"error": e.to_string()})),
-                                        )
-                                    })?,
-                                    uri,
-                                )],
-                            })
-                        }
-                        _ => Err(McpError::resource_not_found(
-                            "resource_not_found",
-                            Some(json!({"uri": uri})),
-                        )),
-                    }
-                } else {
-                    Err(McpError::resource_not_found(
-                        "resource_not_found",
-                        Some(json!({"uri": uri})),
-                    ))
-                }
             }
             _ => Err(McpError::resource_not_found(
                 "resource_not_found",

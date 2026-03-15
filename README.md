@@ -5,7 +5,7 @@
 
 A Model Context Protocol (MCP) server that provides seamless integration with
 Neovim instances, enabling AI assistants to interact with your editor through
-connections and access diagnostic information via structured resources.
+connections and access buffer and connection information via structured resources.
 Supports both stdio and HTTP server transport modes for different integration
 scenarios.
 
@@ -14,7 +14,7 @@ scenarios.
 - **Multi-Connection Support**: Manage multiple concurrent Neovim instances
 - **Universal Document Identifier**: Work with files by buffer ID, relative path,
   or absolute path
-- **MCP Resources**: Structured diagnostic data via connection-aware URI schemes
+- **MCP Resources**: Structured buffer and connection data via connection-aware URI schemes
 - **Multi-Transport Support**: Both stdio and HTTP server transport modes
 - **Dynamic Tool System** ⚠️ **(Experimental)**: User-extensible custom tools
 - **Plugin Integration**: Automatic setup through Neovim plugin
@@ -78,8 +78,8 @@ return {
 claude mcp add -s local nvim -- nvim-mcp --log-file . \
   --log-level debug --connect auto
 
-# Analyze diagnostics in current Neovim instance
-claude "analyze @nvim:nvim-diagnostics://"
+# List active connections
+claude "list @nvim-connections://"
 ```
 
 ## Documentation

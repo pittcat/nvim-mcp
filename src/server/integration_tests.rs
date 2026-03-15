@@ -750,7 +750,7 @@ async fn test_exec_lua_tool() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test]
 #[traced_test]
-async fn test_list_diagnostic_resources() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_list_resources() -> Result<(), Box<dyn std::error::Error>> {
     let (service, _, _guard) = setup_connected_service!();
 
     // Test list_resources
@@ -777,66 +777,7 @@ async fn test_list_diagnostic_resources() -> Result<(), Box<dyn std::error::Erro
     }
 
     service.cancel().await?;
-    info!("List diagnostic resources test completed successfully");
-
-    Ok(())
-}
-
-#[tokio::test]
-#[traced_test]
-async fn test_read_workspace_diagnostics() -> Result<(), Box<dyn std::error::Error>> {
-    let (service, connection_id, _guard) = setup_connected_service!();
-
-    // Test read workspace diagnostics resource
-    let result = service
-        .read_resource(read_resource_req(format!(
-            "nvim-diagnostics://{connection_id}/workspace"
-        )))
-        .await?;
-
-    info!("Read workspace diagnostics result: {:#?}", result);
-    assert!(!result.contents.is_empty());
-
-    // Verify the response contains diagnostic data
-    if let Some(_content) = result.contents.first() {
-        // Content received successfully - the actual parsing can be tested
-        // in more detailed unit tests if needed
-        info!("Successfully received resource content");
-    } else {
-        panic!("No content in workspace diagnostics result");
-    }
-
-    // Test reading invalid resource URI
-    let result = service
-        .read_resource(read_resource_req(
-            "nvim-diagnostics://invalid/workspace".to_string(),
-        ))
-        .await;
-
-    assert!(result.is_err(), "Should fail for invalid connection ID");
-
-    // Test reading buffer diagnostics resource
-    let result = service
-        .read_resource(read_resource_req(format!(
-            "nvim-diagnostics://{connection_id}/buffer/1"
-        )))
-        .await?;
-
-    assert!(!result.contents.is_empty());
-    info!("Buffer diagnostics resource read successfully");
-
-    // Test invalid buffer ID
-    let result = service
-        .read_resource(read_resource_req(format!(
-            "nvim-diagnostics://{connection_id}/buffer/invalid"
-        )))
-        .await;
-
-    assert!(result.is_err(), "Should fail for invalid buffer ID");
-
-    // Cleanup happens automatically via guard
-    service.cancel().await?;
-    info!("Read workspace diagnostics test completed successfully");
+    info!("List resources test completed successfully");
 
     Ok(())
 }

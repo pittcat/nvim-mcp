@@ -109,8 +109,7 @@ Neovim instances associated with your current project:
    - Reports connection status and IDs
 3. **Use connection-aware tools directly**:
    - Server logs will show the `connection_id`s for connected instances
-   - Use tools like `list_buffers`, `buffer_diagnostics`, `read`, etc.
-     with these IDs
+   - Use tools like `list_buffers`, `read`, etc. with these IDs
    - Access resources immediately without manual connection setup
 
 ### Specific Target Mode
@@ -140,10 +139,8 @@ For traditional discovery-based workflow:
    - Use `connect` tool with a socket path from step 1
    - Save the returned `connection_id` for subsequent operations
 3. **Perform operations**:
-   - Use tools like `list_buffers`, `buffer_diagnostics`, etc. with your
-     `connection_id`
-   - Access resources like `nvim-connections://` or
-     `nvim-diagnostics://{connection_id}/workspace`
+   - Use tools like `list_buffers`, `read`, etc. with your `connection_id`
+   - Access resources like `nvim-connections://` or `nvim-tools://`
 4. **Optional cleanup**:
    - Use `disconnect` tool when completely done
 

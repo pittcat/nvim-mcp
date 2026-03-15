@@ -166,8 +166,6 @@ impl NeovimMcpServer {
         client: Box<dyn NeovimClientTrait + Send + Sync>,
         ctx: &RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
-        client.setup_autocmd().await?;
-
         let mut should_notify = self.nvim_clients.is_empty();
 
         // Discover and register Lua tools for this connection
@@ -325,7 +323,6 @@ pub async fn auto_connect_single_target(
     // Import NeovimClient here to avoid circular imports
     let mut client = crate::neovim::NeovimClient::default();
     client.connect_path(target).await?;
-    client.setup_autocmd().await?;
 
     server
         .nvim_clients
