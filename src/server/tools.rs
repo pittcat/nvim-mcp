@@ -52,6 +52,26 @@ pub struct NavigateParams {
     pub position: Position,
 }
 
+fn default_read_end() -> i64 {
+    -1
+}
+
+/// Read document content by buffer ID or file path
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReadDocumentRequest {
+    /// Unique identifier for the target Neovim instance
+    pub connection_id: String,
+    /// Document to read
+    #[serde(deserialize_with = "string_or_struct")]
+    pub document: DocumentIdentifier,
+    /// Start line index (0-based, inclusive)
+    #[serde(default)]
+    pub start: i64,
+    /// End line index (0-based, exclusive). -1 means to the end of the document.
+    #[serde(default = "default_read_end")]
+    pub end: i64,
+}
+
 macro_rules! include_files {
     ($($key:ident),* $(,)?) => {{
         let mut map = HashMap::new();
@@ -193,6 +213,25 @@ impl NeovimMcpServer {
         let client = self.get_connection(&connection_id)?;
         let buffers = client.get_buffers().await?;
         Ok(CallToolResult::success(vec![Content::json(buffers)?]))
+    }
+
+    #[tool(
+        name = "read",
+        description = "Read document content with universal document identification"
+    )]
+    #[instrument(skip(self))]
+    pub async fn read_document_tool(
+        &self,
+        Parameters(ReadDocumentRequest {
+            connection_id,
+            document,
+            start,
+            end,
+        }): Parameters<ReadDocumentRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = self.get_connection(&connection_id)?;
+        let content = client.read_document(document, start, end).await?;
+        Ok(CallToolResult::success(vec![Content::text(content)]))
     }
 
     #[tool(description = "Execute Lua code")]

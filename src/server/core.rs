@@ -22,6 +22,7 @@ impl From<NeovimError> for McpError {
     }
 }
 
+#[derive(Clone)]
 pub struct NeovimMcpServer {
     pub nvim_clients: Arc<DashMap<String, Box<dyn NeovimClientTrait + Send>>>,
     pub hybrid_router: HybridToolRouter,
@@ -158,6 +159,10 @@ impl NeovimMcpServer {
             lua_tools::discover_and_register_lua_tools(self, connection_id, client).await?;
         }
         Ok(())
+    }
+
+    pub fn server_for_http_session(&self) -> Self {
+        self.clone()
     }
 
     pub(crate) async fn setup_new_client(
@@ -369,5 +374,90 @@ pub async fn auto_connect_current_project_targets(
         Err(failed_connections)
     } else {
         Ok(successful_connections)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use rmpv::Value;
+
+    use super::*;
+    use crate::neovim::{
+        DocumentIdentifier, NeovimError, Position,
+        client::{BufferInfo, NavigateResult, Notification},
+    };
+
+    struct StubClient {
+        target: String,
+    }
+
+    #[async_trait]
+    impl NeovimClientTrait for StubClient {
+        fn target(&self) -> Option<String> {
+            Some(self.target.clone())
+        }
+
+        async fn disconnect(&mut self) -> Result<String, NeovimError> {
+            Ok("disconnected".to_string())
+        }
+
+        async fn get_buffers(&self) -> Result<Vec<BufferInfo>, NeovimError> {
+            Ok(Vec::new())
+        }
+
+        async fn execute_lua(&self, _code: &str) -> Result<Value, NeovimError> {
+            Ok(Value::Nil)
+        }
+
+        async fn wait_for_notification(
+            &self,
+            notification_name: &str,
+            _timeout_ms: u64,
+        ) -> Result<Notification, NeovimError> {
+            Ok(Notification {
+                name: notification_name.to_string(),
+                args: Vec::new(),
+                timestamp: std::time::SystemTime::now(),
+            })
+        }
+
+        async fn navigate(
+            &self,
+            _document: DocumentIdentifier,
+            _position: Position,
+        ) -> Result<NavigateResult, NeovimError> {
+            Ok(NavigateResult {
+                path: self.target.clone(),
+                line: 0,
+                column: 0,
+            })
+        }
+
+        async fn read_document(
+            &self,
+            _document: DocumentIdentifier,
+            _start: i64,
+            _end: i64,
+        ) -> Result<String, NeovimError> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn test_http_session_server_preserves_existing_connections() {
+        let server = NeovimMcpServer::with_connect_mode(Some("auto".to_string()));
+        server.nvim_clients.insert(
+            "abc1234".to_string(),
+            Box::new(StubClient {
+                target: "/tmp/project.sock".to_string(),
+            }),
+        );
+
+        let session_server = server.server_for_http_session();
+
+        assert_eq!(session_server.connect_mode.as_deref(), Some("auto"));
+        assert_eq!(session_server.nvim_clients.len(), 1);
+        assert!(session_server.get_connection("abc1234").is_ok());
     }
 }

@@ -162,3 +162,19 @@ nvim-mcp --http-port 8080 --http-host 0.0.0.0
 # With custom logging
 nvim-mcp --http-port 8080 --log-file ./nvim-mcp.log --log-level debug
 ```
+
+Important: `--http-port` only changes how `nvim-mcp` serves MCP after it starts. If your MCP client is still using a `command`/`args` child-process configuration, that client is still expecting `stdio` unless it has a separate HTTP URL transport configuration. Do not assume that adding `--http-port` to a `stdio` server entry automatically converts the client side to HTTP.
+
+For Claude Code specifically:
+
+```bash
+# Stdio mode: Claude Code starts nvim-mcp as a subprocess
+claude mcp add -s project nvim-mcp-stdio -- /Users/pittcat/Dev/Rust/nvim-mcp/target/release/nvim-mcp \
+  --connect auto --log-file ./nvim-mcp.log --log-level debug
+
+# HTTP mode: start nvim-mcp separately, then point Claude Code at the URL
+nvim-mcp --http-port 8080 --connect auto --log-file ./nvim-mcp-http.log --log-level debug
+claude mcp add -s project --transport http nvim-mcp-http http://127.0.0.1:8080
+```
+
+The `nvim-mcp-http` entry in `docs/nvim.json` does not start the HTTP server for you. Start the `nvim-mcp --http-port 8080 ...` process yourself first, then let Claude Code connect to that URL.

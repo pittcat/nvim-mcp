@@ -104,6 +104,7 @@ pub trait DynamicTool: Send + Sync {
 }
 
 /// Hybrid router that combines static tools (from #[tool_router] macro) with dynamic tools
+#[derive(Clone)]
 pub struct HybridToolRouter {
     /// Static tools from #[tool_router] macro
     static_router: ToolRouter<NeovimMcpServer>,
