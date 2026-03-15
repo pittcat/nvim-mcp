@@ -415,7 +415,6 @@ pub struct Position {
     pub character: u64,
 }
 
-
 /// Result of a navigate operation
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -437,7 +436,6 @@ pub struct TextDocumentPositionParams {
     /// The position in the text document
     pub position: Position,
 }
-
 
 /// Read document parameters
 #[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -537,8 +535,6 @@ pub enum NvimExecuteLuaResult<T> {
     Error(String),
     #[serde(rename = "result")]
     Ok(T),
-    #[serde(rename = "err")]
-    LspError { message: String, code: i32 },
 }
 
 impl<T> From<NvimExecuteLuaResult<T>> for Result<T, NeovimError> {
@@ -547,7 +543,6 @@ impl<T> From<NvimExecuteLuaResult<T>> for Result<T, NeovimError> {
         match val {
             Ok(result) => Result::Ok(result),
             Error(msg) => Err(NeovimError::Api(msg)),
-            LspError { message, code } => Err(NeovimError::Lsp { code, message }),
         }
     }
 }
@@ -732,9 +727,7 @@ where
                             version: None,
                         })
                     }
-                    Err(e) => Err(NeovimError::Api(format!(
-                        "Failed to get buffer URI: {e}"
-                    ))),
+                    Err(e) => Err(NeovimError::Api(format!("Failed to get buffer URI: {e}"))),
                 }
             }
             DocumentIdentifier::ProjectRelativePath(rel_path) => {
@@ -1001,7 +994,6 @@ where
         // After notification, try to get diagnostics again
         self.get_diagnostics(buffer_id).await
     }
-
 
     #[instrument(skip(self))]
     async fn read_document(

@@ -9,3 +9,5 @@
 .packaged-commit
 .serena/
 .ralph/
+ralph.yml
+.worktrees/

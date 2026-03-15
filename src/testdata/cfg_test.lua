@@ -1,4 +1,4 @@
--- Test configuration file for non-LSP tests
+-- Test configuration file
 -- Contains custom tool definitions for testing
 
 package.path = "./lua/?.lua;./lua/?/init.lua;" .. package.path

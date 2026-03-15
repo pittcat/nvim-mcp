@@ -264,4 +264,3 @@ async fn test_setup_autocmd_emits_diagnostics_changed_notification() {
 
     assert_eq!(notification.name, "NVIM_MCP_DiagnosticsChanged");
 }
-

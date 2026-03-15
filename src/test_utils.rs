@@ -444,8 +444,8 @@ impl Default for AutoConnectAdvanceOptions {
     }
 }
 
-/// Setup connected client with advanced configuration and auto-setup (LSP + analysis)
-/// This mimics auto-connect behavior with full LSP setup
+/// Setup connected client with advanced configuration and auto-setup
+/// This mimics auto-connect behavior with diagnostics
 pub async fn setup_auto_connected_client_ipc_advance(
     ipc_path: &str,
     config_path: &str,
@@ -461,7 +461,7 @@ pub async fn setup_auto_connected_client_ipc_advance(
 }
 
 /// Setup connected client with advanced configuration and auto-setup.
-/// This optionally waits for LSP readiness and/or diagnostics.
+/// This optionally waits for diagnostics.
 pub async fn setup_auto_connected_client_ipc_advance_with_options(
     ipc_path: &str,
     config_path: &str,
