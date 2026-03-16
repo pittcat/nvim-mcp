@@ -15,9 +15,34 @@ The server provides 33 MCP tools for interacting with Neovim:
 - **`connect_tcp`**: Connect via TCP
   - Parameters: `target` (string) - TCP address (e.g., "127.0.0.1:6666")
   - Returns: `connection_id` (string) - Deterministic connection identifier
+  - **Note**: Unix socket paths are not accepted; use `connect` tool for Unix sockets
 
 - **`disconnect`**: Disconnect from specific Neovim instance
   - Parameters: `connection_id` (string) - Connection identifier to disconnect
+
+## Connection Error Handling
+
+When using connection-aware tools, the following error conditions may occur:
+
+### Stale Connection Detection
+
+If a Neovim connection becomes stale (e.g., Neovim process terminated), the
+server will:
+1. Automatically detect the stale connection when attempting to use it
+2. Remove the stale connection from the registry
+3. Return a clear error message with `error_type: "stale_connection"` and
+   `suggested_action: "reconnect"`
+
+To recover from a stale connection:
+```bash
+# Use the connect tool to re-establish the connection
+connect {"target": "/path/to/nvim.sock"}
+```
+
+### Connection Not Found
+
+If an invalid or non-existent `connection_id` is provided, the server returns
+an error indicating the connection was not found.
 
 ## Connection-Aware Tools
 

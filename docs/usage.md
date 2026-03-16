@@ -218,6 +218,32 @@ The HTTP server is configured with settings optimized for multi-client scenarios
 
 These settings ensure stable operation when multiple clients are active simultaneously.
 
+#### Session Recovery
+
+In multi-client HTTP mode, sessions may occasionally need to be recovered:
+
+**Session Resume Behavior:**
+
+- When resuming a session with an invalid or expired `mcp-session-id`, the
+  server returns a 401 Unauthorized response instead of HTTP 500
+- This is a recoverable error - clients should re-initialize their MCP session
+- The error response includes clear messaging to guide recovery
+
+**Recovery Steps:**
+
+1. If you receive a session resume error, your client should re-initialize:
+   - Re-send the `initialize` request to establish a new session
+   - Re-discover and reconnect to Neovim instances as needed
+2. Existing Neovim connections remain intact during session recovery
+3. Other clients sharing the daemon are not affected
+
+**Preventing Session Issues:**
+
+- Use the server's default multi-client configuration (64 channel capacity,
+  no keep-alive timeout)
+- Avoid restarting the HTTP server while clients are active
+- Monitor `debug_log.txt` for session-related warnings
+
 #### Limitations and Best Practices
 
 **Limitations:**
@@ -249,3 +275,5 @@ These settings ensure stable operation when multiple clients are active simultan
 | Connection not visible to other clients | Used `--connect manual` and client-specific connections | Use `--connect auto` for shared connections |
 | Stale socket errors | Neovim process terminated | Restart Neovim and reconnect; stale socket errors are now handled gracefully |
 | Port already in use | Another instance running | Kill existing process or use different port with `--http-port` |
+| HTTP 401 Unauthorized on resume | Session expired or server restarted | Re-initialize MCP session; connections will need to be re-established |
+| `connect_tcp` rejects path | Unix socket path passed to `connect_tcp` | Use `connect` tool for Unix sockets, `connect_tcp` for TCP addresses only |
