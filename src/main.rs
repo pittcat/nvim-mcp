@@ -348,8 +348,7 @@ async fn run_server(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     let content_type = preview_http_header(&request, "content-type");
                     let accept = preview_http_header(&request, "accept");
                     let session_id = preview_http_header(&request, "mcp-session-id");
-                    let context_id =
-                        format!("http:{}:{}:{}", peer_addr, method, uri.path());
+                    let context_id = format!("http:{}:{}:{}", peer_addr, method, uri.path());
 
                     info!(
                         context_id = %context_id,

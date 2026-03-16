@@ -79,7 +79,7 @@ impl NeovimMcpServer {
         full_hash
     }
 
-    /// Get connection by ID with proper error handling
+    /// Get connection by ID with proper error handling and stale connection detection
     pub fn get_connection(
         &'_ self,
         connection_id: &str,
@@ -87,6 +87,36 @@ impl NeovimMcpServer {
     {
         match self.nvim_clients.get(connection_id) {
             Some(connection) => {
+                // Check if connection is still alive
+                if !connection.is_alive() {
+                    // Connection is stale - remove it from registry
+                    warn!(
+                        context_id = connection_id,
+                        "检测到 stale 连接 | 调用栈: server() → get_connection() line {} | 数据流: connection_id={} → 触发清理",
+                        line!(),
+                        connection_id
+                    );
+                    // Remove the stale connection
+                    let target = connection
+                        .target()
+                        .map(|t| preview_text(&t, 80))
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    drop(connection); // Release the ref before removing
+                    self.nvim_clients.remove(connection_id);
+                    return Err(McpError::invalid_request(
+                        format!(
+                            "Neovim connection for ID '{}' is no longer active (target: {}). Please reconnect using the connect tool.",
+                            connection_id, target
+                        ),
+                        Some(serde_json::json!({
+                            "connection_id": connection_id,
+                            "target": target,
+                            "error_type": "stale_connection",
+                            "suggested_action": "reconnect"
+                        })),
+                    ));
+                }
+
                 debug!(
                     context_id = connection_id,
                     "连接查询成功 | 调用栈: server() → get_connection() line {} | 数据流: 输入 connection_id={} → 输出 target={}",
@@ -495,6 +525,10 @@ mod tests {
             Some(self.target.clone())
         }
 
+        fn is_alive(&self) -> bool {
+            true // Stub is always alive
+        }
+
         async fn disconnect(&mut self) -> Result<String, NeovimError> {
             Ok("disconnected".to_string())
         }
@@ -641,6 +675,90 @@ mod tests {
         );
 
         drop(nvim_guard);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_connection_prunes_stale_connections() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::sync::atomic::AtomicBool;
+
+        // Create a stub client that simulates a dead connection
+        struct DeadConnection {
+            target_str: String,
+        }
+
+        #[async_trait]
+        impl NeovimClientTrait for DeadConnection {
+            fn target(&self) -> Option<String> {
+                Some(self.target_str.clone())
+            }
+
+            fn is_alive(&self) -> bool {
+                false // Simulate dead connection
+            }
+
+            async fn disconnect(&mut self) -> Result<String, NeovimError> {
+                Ok(self.target_str.clone())
+            }
+
+            async fn get_buffers(&self) -> Result<Vec<BufferInfo>, NeovimError> {
+                Err(NeovimError::Connection("Connection dead".to_string()))
+            }
+
+            async fn execute_lua(&self, _code: &str) -> Result<Value, NeovimError> {
+                Err(NeovimError::Connection("Connection dead".to_string()))
+            }
+
+            async fn wait_for_notification(
+                &self,
+                _notification_name: &str,
+                _timeout_ms: u64,
+            ) -> Result<Notification, NeovimError> {
+                Err(NeovimError::Connection("Connection dead".to_string()))
+            }
+
+            async fn navigate(
+                &self,
+                _document: DocumentIdentifier,
+                _position: Position,
+            ) -> Result<NavigateResult, NeovimError> {
+                Err(NeovimError::Connection("Connection dead".to_string()))
+            }
+
+            async fn read_document(
+                &self,
+                _document: DocumentIdentifier,
+                _start: i64,
+                _end: i64,
+            ) -> Result<String, NeovimError> {
+                Err(NeovimError::Connection("Connection dead".to_string()))
+            }
+        }
+
+        let server = NeovimMcpServer::new();
+        let connection_id = "test-dead-conn";
+
+        // Insert a dead connection
+        server.nvim_clients.insert(
+            connection_id.to_string(),
+            Box::new(DeadConnection {
+                target_str: "/tmp/dead.sock".to_string(),
+            }),
+        );
+
+        // Try to get the connection - it should be pruned and return an error
+        let result = server.get_connection(connection_id);
+
+        // Should fail with stale connection error
+        assert!(result.is_err(), "Should return error for stale connection");
+
+        // Verify the connection was removed from the registry
+        assert!(
+            server.nvim_clients.get(connection_id).is_none(),
+            "Dead connection should be removed from registry"
+        );
 
         Ok(())
     }

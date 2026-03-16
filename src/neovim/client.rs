@@ -25,9 +25,12 @@ use crate::logging::preview_text;
 
 /// Common trait for Neovim client operations
 #[async_trait]
-pub trait NeovimClientTrait: Sync {
+pub trait NeovimClientTrait: Sync + Send {
     /// Get the target of the Neovim connection
     fn target(&self) -> Option<String>;
+
+    /// Check if the connection is still alive (synchronous check)
+    fn is_alive(&self) -> bool;
 
     /// Disconnect from the current Neovim instance
     async fn disconnect(&mut self) -> Result<String, NeovimError>;
@@ -711,6 +714,16 @@ where
 {
     fn target(&self) -> Option<String> {
         self.connection.as_ref().map(|c| c.target().to_string())
+    }
+
+    #[instrument(skip(self))]
+    fn is_alive(&self) -> bool {
+        // Check if connection exists and io_handler is still running
+        if let Some(ref conn) = self.connection {
+            !conn.io_handler.is_finished()
+        } else {
+            false
+        }
     }
 
     #[instrument(skip(self))]

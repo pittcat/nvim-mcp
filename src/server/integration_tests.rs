@@ -1232,3 +1232,58 @@ async fn test_http_stale_socket_does_not_break_shared_session()
 
     Ok(())
 }
+
+/// Test that connect_tcp rejects Unix socket paths with a helpful error message
+#[tokio::test]
+#[traced_test]
+async fn test_connect_tcp_rejects_unix_socket_path_with_hint()
+-> Result<(), Box<dyn std::error::Error>> {
+    info!("Testing connect_tcp rejects Unix socket path with hint");
+
+    let _guard = NEOVIM_TEST_MUTEX.lock().unwrap();
+
+    // Generate random socket path for test isolation
+    let ipc_path = generate_random_ipc_path();
+    let nvim_guard = setup_test_neovim_instance(&ipc_path).await?;
+
+    // Create MCP service
+    let service = create_mcp_service!();
+
+    // Test 1: Try to use Unix socket path with connect_tcp
+    let mut connect_args = Map::new();
+    connect_args.insert("target".to_string(), Value::String(ipc_path.clone()));
+
+    let result = service
+        .call_tool(call_tool_req("connect_tcp", Some(connect_args)))
+        .await;
+
+    // Should fail with a clear error about using 'connect' instead
+    assert!(
+        result.is_err(),
+        "connect_tcp with Unix socket path should fail"
+    );
+    let error = result.unwrap_err();
+    let error_str = error.to_string();
+
+    // Verify the error message contains helpful information
+    assert!(
+        error_str.contains("connect") || error_str.contains("Unix socket"),
+        "Error should mention Unix socket or connect: {}",
+        error_str
+    );
+
+    info!(
+        "connect_tcp correctly rejects Unix socket path with hint: {}",
+        error_str
+    );
+
+    // Test 2: Verify legitimate TCP address still works
+    // Note: This test would require a TCP server, so we just verify the validation is in place
+
+    service.cancel().await?;
+    info!("connect_tcp validation test completed successfully");
+
+    drop(nvim_guard);
+
+    Ok(())
+}

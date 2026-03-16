@@ -17,6 +17,46 @@ use crate::{
     neovim::{DocumentIdentifier, NeovimClient, Position, string_or_struct},
 };
 
+/// Check if the given address looks like a Unix socket path that should not be used with connect_tcp
+/// This helps users who mistakenly try to use Unix socket paths with the TCP connection tool.
+fn is_unix_socket_path(address: &str) -> bool {
+    // Common patterns for Unix socket paths:
+    // - Absolute paths starting with / (e.g., /tmp/nvim.sock)
+    // - Paths containing .sock extension
+    // - Paths that look like typical socket file locations
+
+    // Check if it's clearly a Unix socket path
+    if address.starts_with('/') {
+        // It's an absolute path - likely a Unix socket
+        // But also check if it could be a legitimate path-style TCP address on Linux
+        // Linux abstract socket addresses start with @
+
+        // If it starts with / and doesn't contain : (which would indicate TCP host:port)
+        // and it's not an IPv6 address, it's likely a Unix socket
+        if !address.contains(':') && !address.starts_with("/[") {
+            return true;
+        }
+    }
+
+    // Check for common socket file extensions
+    if address.ends_with(".sock") || address.contains("/nvim") && address.contains(".sock") {
+        return true;
+    }
+
+    // Check for typical socket directory patterns
+    if address.starts_with("/tmp/")
+        || address.starts_with("/var/run/")
+        || address.starts_with("/usr/local/")
+    {
+        // Further check: if no port number (no colon with digits), likely a socket
+        if !address.matches(':').count() >= 2 {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Connect to Neovim instance via unix socket or TCP
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ConnectNvimRequest {
@@ -95,7 +135,10 @@ fn summarize_document(document: &DocumentIdentifier) -> String {
             )
         }
         DocumentIdentifier::AbsolutePath(path) => {
-            format!("absolute_path={}", preview_text(&path.display().to_string(), 80))
+            format!(
+                "absolute_path={}",
+                preview_text(&path.display().to_string(), 80)
+            )
         }
     }
 }
@@ -199,6 +242,28 @@ impl NeovimMcpServer {
             preview_text(&address, 120),
             connection_id
         );
+
+        // Check if the address looks like a Unix socket path (common misuse)
+        if is_unix_socket_path(&address) {
+            tracing::warn!(
+                context_id = %context_id,
+                "TCP 连接收到 Unix socket 路径 | 调用栈: connect_tcp() line {} | 数据流: address={}",
+                line!(),
+                preview_text(&address, 120)
+            );
+            return Err(McpError::invalid_params(
+                format!(
+                    "The address '{}' appears to be a Unix socket path. \
+                     Please use the 'connect' tool instead of 'connect_tcp' for Unix socket connections.",
+                    address
+                ),
+                Some(serde_json::json!({
+                    "address": address,
+                    "suggested_tool": "connect",
+                    "reason": "Unix socket paths should use the 'connect' tool"
+                })),
+            ));
+        }
 
         // If connection already exists, disconnect the old one first (ignoring errors)
         if let Some(mut old_client) = self.nvim_clients.get_mut(&connection_id) {
@@ -424,4 +489,24 @@ impl NeovimMcpServer {
 /// Build tool router for NeovimMcpServer
 pub fn build_tool_router() -> ToolRouter<NeovimMcpServer> {
     NeovimMcpServer::tool_router()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_unix_socket_path() {
+        // Unix socket paths should be detected
+        assert!(is_unix_socket_path("/tmp/nvim.sock"));
+        assert!(is_unix_socket_path("/tmp/nvim-mcp.test.sock"));
+        assert!(is_unix_socket_path("/var/run/nvim.sock"));
+        assert!(is_unix_socket_path("/usr/local/bin/nvim.sock"));
+
+        // TCP addresses should not be detected as Unix sockets
+        assert!(!is_unix_socket_path("127.0.0.1:6666"));
+        assert!(!is_unix_socket_path("localhost:8080"));
+        assert!(!is_unix_socket_path("192.168.1.1:9000"));
+        assert!(!is_unix_socket_path("[::1]:6666"));
+    }
 }
