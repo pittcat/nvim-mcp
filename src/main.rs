@@ -10,7 +10,7 @@ use rmcp::{
     ServiceExt,
     transport::{
         StreamableHttpServerConfig, StreamableHttpService, stdio,
-        streamable_http_server::session::local::LocalSessionManager,
+        streamable_http_server::session::local::{LocalSessionManager, SessionConfig},
     },
 };
 use tracing::{error, info, warn};
@@ -204,9 +204,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // HTTP server mode
         let addr = format!("{}:{}", cli.http_host, port);
         info!("Starting HTTP server on {}", addr);
+
+        // Configure session manager with appropriate settings for multi-client scenarios:
+        // - Increased channel capacity to handle concurrent requests from multiple clients
+        // - No keep-alive timeout to prevent premature session closure
+        let session_config = SessionConfig {
+            channel_capacity: 64, // Increased from default 16 for multi-client support
+            keep_alive: None,     // No timeout - sessions stay alive until explicitly closed
+        };
+        let session_manager = LocalSessionManager {
+            sessions: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            session_config,
+        };
+
         let service = TowerToHyperService::new(StreamableHttpService::new(
             move || Ok(server.server_for_http_session()),
-            LocalSessionManager::default().into(),
+            session_manager.into(),
             StreamableHttpServerConfig {
                 stateful_mode: true,
                 ..Default::default()

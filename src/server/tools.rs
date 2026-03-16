@@ -139,6 +139,7 @@ impl NeovimMcpServer {
         Ok(CallToolResult::success(vec![Content::json(
             serde_json::json!({
                 "connection_id": connection_id,
+                "status": "connected",
             }),
         )?]))
     }
@@ -166,6 +167,7 @@ impl NeovimMcpServer {
         Ok(CallToolResult::success(vec![Content::json(
             serde_json::json!({
                 "connection_id": connection_id,
+                "status": "connected",
             }),
         )?]))
     }
@@ -194,6 +196,7 @@ impl NeovimMcpServer {
                 serde_json::json!({
                     "connection_id": connection_id,
                     "target": target,
+                    "status": "disconnected",
                 }),
             )?]))
         } else {

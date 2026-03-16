@@ -178,3 +178,74 @@ claude mcp add -s project --transport http nvim-mcp-http http://127.0.0.1:8080
 ```
 
 The `nvim-mcp-http` entry in `docs/nvim.json` does not start the HTTP server for you. Start the `nvim-mcp --http-port 8080 ...` process yourself first, then let Claude Code connect to that URL.
+
+### Multi-Client HTTP Mode (Shared Daemon)
+
+The HTTP server supports multiple concurrent MCP clients sharing the same `nvim-mcp` daemon process. This enables scenarios like multiple Claude Code windows or other MCP clients connecting to a single long-running server.
+
+#### Usage Pattern
+
+```bash
+# 1. Start the HTTP server (single daemon)
+nvim-mcp --http-port 8080 --connect auto --log-file ./nvim-mcp.log --log-level info
+
+# 2. Configure multiple clients to connect to the same URL
+# Client A (e.g., first Claude Code window)
+claude mcp add -s project nvim-shared --transport http http://127.0.0.1:8080
+
+# Client B (e.g., second Claude Code window)
+claude mcp add -s project nvim-shared --transport http http://127.0.0.1:8080
+```
+
+#### Shared Connection Semantics
+
+When using multi-client HTTP mode, the following semantics apply:
+
+1. **Connection Visibility**: Neovim connections created by one client are visible to all clients sharing the same daemon. All clients can see and use the same `connection_id`s.
+
+2. **Connection Persistence**: Connections persist across client sessions. If Client A creates a connection, Client B can use the same `connection_id` without reconnecting.
+
+3. **Concurrent Requests**: Multiple clients can make requests concurrently without interfering with each other, even when accessing the same Neovim instance.
+
+4. **Session Independence**: Each client maintains its own MCP session while sharing the underlying Neovim connection pool.
+
+#### Configuration Tuning
+
+The HTTP server is configured with settings optimized for multi-client scenarios:
+
+- **Channel Capacity**: 64 concurrent requests (increased from default 16)
+- **Keep-Alive**: Sessions remain active until explicitly closed (no timeout)
+
+These settings ensure stable operation when multiple clients are active simultaneously.
+
+#### Limitations and Best Practices
+
+**Limitations:**
+
+1. **Socket Lifecycle**: If a Neovim socket becomes stale (Neovim process terminates), the connection will fail gracefully with a clear error message, but other clients/sessions are not affected.
+
+2. **No Built-in Authentication**: The HTTP server binds to localhost by default. Use `--http-host` with caution - only bind to external interfaces if you have appropriate network security in place.
+
+3. **Client Disconnection**: When a client disconnects, other clients continue to function normally. However, consider using `--connect auto` so new clients automatically benefit from existing connections.
+
+**Best Practices:**
+
+1. **Use `--connect auto`**: When running as a shared daemon, auto-connection mode ensures all clients see the same pre-connected Neovim instances.
+
+2. **Monitor Logs**: Enable appropriate logging to diagnose multi-client issues:
+   ```bash
+   nvim-mcp --http-port 8080 --connect auto --log-level debug
+   ```
+
+3. **Graceful Shutdown**: To stop the shared daemon, press `Ctrl+C` or send a termination signal. All sessions will be cleaned up properly.
+
+4. **Connection Cleanup**: When done with a Neovim instance, use the `disconnect` tool to close the connection cleanly. This frees resources for all clients.
+
+#### Troubleshooting
+
+| Issue | Possible Cause | Solution |
+|-------|---------------|----------|
+| `Channel closed` errors | Session timeout or server overload | Ensure server uses default multi-client config; check logs for resource exhaustion |
+| Connection not visible to other clients | Used `--connect manual` and client-specific connections | Use `--connect auto` for shared connections |
+| Stale socket errors | Neovim process terminated | Restart Neovim and reconnect; stale socket errors are now handled gracefully |
+| Port already in use | Another instance running | Kill existing process or use different port with `--http-port` |

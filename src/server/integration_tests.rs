@@ -209,14 +209,19 @@ async fn test_disconnect_nvim() -> Result<(), Box<dyn std::error::Error>> {
         .call_tool(call_tool_req("connect", Some(connect_args)))
         .await?;
 
-    let content = result.content.first().unwrap().as_text().unwrap();
-    let connection_id = content
-        .text
-        .lines()
-        .find(|l: &&str| l.contains("Connection ID"))
-        .and_then(|l: &str| l.split('`').nth(1))
-        .map(|s: &str| s.to_string())
-        .ok_or("Failed to extract connection_id")?;
+    // Extract connection_id from JSON result
+    let content_text = result
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+
+    let response_json: serde_json::Value = serde_json::from_str(&content_text)?;
+    let connection_id = response_json["connection_id"]
+        .as_str()
+        .ok_or("Failed to extract connection_id from response")?
+        .to_string();
 
     info!("Connected with ID: {}", connection_id);
 
@@ -320,14 +325,17 @@ async fn test_invalid_connection_id_handling() -> Result<(), Box<dyn std::error:
         .call_tool(call_tool_req("connect", Some(connect_args)))
         .await?;
 
-    let content1 = result1.content.first().unwrap().as_text().unwrap();
-    let connection_id1 = content1
-        .text
-        .lines()
-        .find(|l: &&str| l.contains("Connection ID"))
-        .and_then(|l: &str| l.split('`').nth(1))
-        .map(|s: &str| s.to_string())
-        .ok_or("Failed to extract connection_id1")?;
+    let content1_text = result1
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+    let response_json1: serde_json::Value = serde_json::from_str(&content1_text)?;
+    let connection_id1 = response_json1["connection_id"]
+        .as_str()
+        .ok_or("Failed to extract connection_id1")?
+        .to_string();
 
     // Connect to second instance
     let mut connect_args = Map::new();
@@ -337,14 +345,17 @@ async fn test_invalid_connection_id_handling() -> Result<(), Box<dyn std::error:
         .call_tool(call_tool_req("connect", Some(connect_args)))
         .await?;
 
-    let content2 = result2.content.first().unwrap().as_text().unwrap();
-    let connection_id2 = content2
-        .text
-        .lines()
-        .find(|l: &&str| l.contains("Connection ID"))
-        .and_then(|l: &str| l.split('`').nth(1))
-        .map(|s: &str| s.to_string())
-        .ok_or("Failed to extract connection_id2")?;
+    let content2_text = result2
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+    let response_json2: serde_json::Value = serde_json::from_str(&content2_text)?;
+    let connection_id2 = response_json2["connection_id"]
+        .as_str()
+        .ok_or("Failed to extract connection_id2")?
+        .to_string();
 
     info!(
         "Connected to two instances: {} and {}",
@@ -576,7 +587,7 @@ async fn setup_http_server_with_nvim(
     };
     use rmcp::transport::{
         StreamableHttpServerConfig, StreamableHttpService,
-        streamable_http_server::session::local::LocalSessionManager,
+        streamable_http_server::session::local::{LocalSessionManager, SessionConfig},
     };
     use tokio::net::TcpListener;
 
@@ -595,15 +606,25 @@ async fn setup_http_server_with_nvim(
         .nvim_clients
         .insert(connection_id.clone(), Box::new(client));
 
-    // Start HTTP server
+    // Start HTTP server with configured session manager for multi-client stability
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr).await?;
+
+    // Configure session manager with increased channel capacity for multi-client support
+    let session_config = SessionConfig {
+        channel_capacity: 64,
+        keep_alive: None,
+    };
+    let session_manager = LocalSessionManager {
+        sessions: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+        session_config,
+    };
 
     let server_for_handler = server.clone();
     let handle = tokio::spawn(async move {
         let service = TowerToHyperService::new(StreamableHttpService::new(
             move || Ok(server_for_handler.server_for_http_session()),
-            LocalSessionManager::default().into(),
+            session_manager.into(),
             StreamableHttpServerConfig {
                 stateful_mode: true,
                 ..Default::default()
@@ -966,22 +987,32 @@ async fn test_http_stale_socket_does_not_break_shared_session()
     };
     use rmcp::transport::{
         StreamableHttpServerConfig, StreamableHttpService,
-        streamable_http_server::session::local::LocalSessionManager,
+        streamable_http_server::session::local::{LocalSessionManager, SessionConfig},
     };
     use tokio::net::TcpListener;
 
     // Create server with manual connect mode (no pre-existing connections)
     let server = crate::NeovimMcpServer::with_connect_mode(Some("manual".to_string()));
 
-    // Start HTTP server
+    // Start HTTP server with configured session manager for multi-client stability
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr).await?;
+
+    // Configure session manager with increased channel capacity for multi-client support
+    let session_config = SessionConfig {
+        channel_capacity: 64,
+        keep_alive: None,
+    };
+    let session_manager = LocalSessionManager {
+        sessions: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+        session_config,
+    };
 
     let server_for_handler = server.clone();
     let _server_handle = tokio::spawn(async move {
         let service = TowerToHyperService::new(StreamableHttpService::new(
             move || Ok(server_for_handler.server_for_http_session()),
-            LocalSessionManager::default().into(),
+            session_manager.into(),
             StreamableHttpServerConfig {
                 stateful_mode: true,
                 ..Default::default()
