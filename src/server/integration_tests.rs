@@ -173,7 +173,10 @@ async fn test_connect_nvim() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify connection exists via list_buffers
     let mut list_args = Map::new();
-    list_args.insert("connection_id".to_string(), Value::String(connection_id.to_string()));
+    list_args.insert(
+        "connection_id".to_string(),
+        Value::String(connection_id.to_string()),
+    );
 
     let buffers_result = service
         .call_tool(call_tool_req("list_buffers", Some(list_args)))
@@ -248,7 +251,10 @@ async fn test_disconnect_nvim() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify connection no longer exists
     let mut list_args = Map::new();
-    list_args.insert("connection_id".to_string(), Value::String(connection_id.to_string()));
+    list_args.insert(
+        "connection_id".to_string(),
+        Value::String(connection_id.to_string()),
+    );
 
     let result = service
         .call_tool(call_tool_req("list_buffers", Some(list_args)))
@@ -726,7 +732,8 @@ async fn test_http_multi_client_session_resume_stability() -> Result<(), Box<dyn
 
     // Client A: Send initialized notification (required by MCP protocol)
     // The notification should return 202 Accepted (no response body for notifications)
-    let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+    let initialized_request =
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
     let response_a_init = client
         .post(&mcp_url)
         .header("Content-Type", "application/json")
@@ -735,11 +742,16 @@ async fn test_http_multi_client_session_resume_stability() -> Result<(), Box<dyn
         .body(initialized_request)
         .send()
         .await?;
-    assert_eq!(response_a_init.status(), 202, "Initialized notification should return 202");
+    assert_eq!(
+        response_a_init.status(),
+        202,
+        "Initialized notification should return 202"
+    );
     info!("Client A sent initialized notification");
 
     // Client B: Send initialized notification
-    let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+    let initialized_request =
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
     let response_b_init = client
         .post(&mcp_url)
         .header("Content-Type", "application/json")
@@ -748,7 +760,11 @@ async fn test_http_multi_client_session_resume_stability() -> Result<(), Box<dyn
         .body(initialized_request)
         .send()
         .await?;
-    assert_eq!(response_b_init.status(), 202, "Initialized notification should return 202");
+    assert_eq!(
+        response_b_init.status(),
+        202,
+        "Initialized notification should return 202"
+    );
     info!("Client B sent initialized notification");
 
     // Small delay to ensure notifications are processed
@@ -806,7 +822,8 @@ async fn test_http_multi_client_session_resume_stability() -> Result<(), Box<dyn
     info!("Client C session ID: {}", session_id_c);
 
     // Client C: Send initialized notification
-    let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+    let initialized_request =
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
     let response_c_init = client
         .post(&mcp_url)
         .header("Content-Type", "application/json")
@@ -815,7 +832,11 @@ async fn test_http_multi_client_session_resume_stability() -> Result<(), Box<dyn
         .body(initialized_request)
         .send()
         .await?;
-    assert_eq!(response_c_init.status(), 202, "Initialized notification should return 202");
+    assert_eq!(
+        response_c_init.status(),
+        202,
+        "Initialized notification should return 202"
+    );
     info!("Client C sent initialized notification");
 
     // Small delay to ensure notification is processed
@@ -885,7 +906,8 @@ async fn test_http_multi_client_shared_connection_visibility()
 
     // Send initialized notification for each session (required by MCP protocol)
     for (i, session_id) in sessions.iter().enumerate() {
-        let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+        let initialized_request =
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
         let response = client
             .post(&mcp_url)
             .header("Content-Type", "application/json")
@@ -894,7 +916,12 @@ async fn test_http_multi_client_shared_connection_visibility()
             .body(initialized_request)
             .send()
             .await?;
-        assert_eq!(response.status(), 202, "Client {} initialized notification should return 202", i + 1);
+        assert_eq!(
+            response.status(),
+            202,
+            "Client {} initialized notification should return 202",
+            i + 1
+        );
         info!("Client {} sent initialized notification", i + 1);
     }
 
@@ -1056,7 +1083,8 @@ async fn test_http_stale_socket_does_not_break_shared_session()
         .expect("Should have session ID");
 
     // Client A: Send initialized notification (required by MCP protocol)
-    let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+    let initialized_request =
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
     let response_init = client
         .post(&mcp_url)
         .header("Content-Type", "application/json")
@@ -1065,7 +1093,11 @@ async fn test_http_stale_socket_does_not_break_shared_session()
         .body(initialized_request)
         .send()
         .await?;
-    assert_eq!(response_init.status(), 202, "Initialized notification should return 202");
+    assert_eq!(
+        response_init.status(),
+        202,
+        "Initialized notification should return 202"
+    );
 
     // Client A: Try to connect to a non-existent (stale) socket
     let stale_target = "/tmp/non-existent-stale-socket-test.sock";
@@ -1128,7 +1160,8 @@ async fn test_http_stale_socket_does_not_break_shared_session()
         .expect("Should have session ID for client B");
 
     // Client B: Send initialized notification
-    let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+    let initialized_request =
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
     let response_b_init = client
         .post(&mcp_url)
         .header("Content-Type", "application/json")
@@ -1137,7 +1170,11 @@ async fn test_http_stale_socket_does_not_break_shared_session()
         .body(initialized_request)
         .send()
         .await?;
-    assert_eq!(response_b_init.status(), 202, "Client B initialized notification should return 202");
+    assert_eq!(
+        response_b_init.status(),
+        202,
+        "Client B initialized notification should return 202"
+    );
 
     // Client B: Connect to valid socket
     let connect_request = format!(

@@ -21,6 +21,7 @@ use tokio::{
 use tracing::{debug, info, instrument};
 
 use super::{connection::NeovimConnection, error::NeovimError};
+use crate::logging::preview_text;
 
 /// Common trait for Neovim client operations
 #[async_trait]
@@ -522,6 +523,12 @@ impl NeovimClient<Connection> {
         }
 
         debug!("Attempting to connect to Neovim at {}", path);
+        info!(
+            context_id = format!("sock:{}", preview_text(path, 48)),
+            "开始 socket 连接 | 调用栈: caller() → connect_path() line {} | 数据流: 输入 path={}",
+            line!(),
+            preview_text(path, 120)
+        );
         let handler = NeovimHandler::new();
         let notification_tracker = handler.notification_tracker();
         match create::new_path(path, handler).await {
@@ -538,10 +545,22 @@ impl NeovimClient<Connection> {
                 self.connection = Some(connection);
                 self.notification_tracker = Some(notification_tracker);
                 debug!("Successfully connected to Neovim at {}", path);
+                info!(
+                    context_id = format!("sock:{}", preview_text(path, 48)),
+                    "socket 连接成功 | 调用栈: connect_path() line {} | 数据流: 输出 status=connected target={}",
+                    line!(),
+                    preview_text(path, 120)
+                );
                 Ok(())
             }
             Err(e) => {
                 debug!("Failed to connect to Neovim at {}: {}", path, e);
+                info!(
+                    context_id = format!("sock:{}", preview_text(path, 48)),
+                    "socket 连接失败 | 调用栈: connect_path() line {} | 数据流: 输出 error={}",
+                    line!(),
+                    preview_text(&e.to_string(), 120)
+                );
                 Err(NeovimError::Connection(format!("Connection failed: {e}")))
             }
         }
@@ -559,6 +578,12 @@ impl NeovimClient<TcpStream> {
         }
 
         debug!("Attempting to connect to Neovim at {}", address);
+        info!(
+            context_id = format!("tcp:{}", preview_text(address, 48)),
+            "开始 TCP 连接 | 调用栈: caller() → connect_tcp() line {} | 数据流: 输入 address={}",
+            line!(),
+            preview_text(address, 120)
+        );
         let handler = NeovimHandler::new();
         let notification_tracker = handler.notification_tracker();
         match create::new_tcp(address, handler).await {
@@ -575,10 +600,22 @@ impl NeovimClient<TcpStream> {
                 self.connection = Some(connection);
                 self.notification_tracker = Some(notification_tracker);
                 debug!("Successfully connected to Neovim at {}", address);
+                info!(
+                    context_id = format!("tcp:{}", preview_text(address, 48)),
+                    "TCP 连接成功 | 调用栈: connect_tcp() line {} | 数据流: 输出 status=connected target={}",
+                    line!(),
+                    preview_text(address, 120)
+                );
                 Ok(())
             }
             Err(e) => {
                 debug!("Failed to connect to Neovim at {}: {}", address, e);
+                info!(
+                    context_id = format!("tcp:{}", preview_text(address, 48)),
+                    "TCP 连接失败 | 调用栈: connect_tcp() line {} | 数据流: 输出 error={}",
+                    line!(),
+                    preview_text(&e.to_string(), 120)
+                );
                 Err(NeovimError::Connection(format!("Connection failed: {e}")))
             }
         }
@@ -679,6 +716,10 @@ where
     #[instrument(skip(self))]
     async fn disconnect(&mut self) -> Result<String, NeovimError> {
         debug!("Attempting to disconnect from Neovim");
+        let context_id = self
+            .target()
+            .map(|target| preview_text(&target, 48))
+            .unwrap_or_else(|| "nvim-client".to_string());
 
         if let Some(connection) = self.connection.take() {
             let target = connection.target().to_string();
@@ -690,6 +731,12 @@ where
             }
 
             debug!("Successfully disconnected from Neovim at {}", target);
+            info!(
+                context_id = context_id,
+                "断开 Neovim 连接 | 调用栈: disconnect() line {} | 数据流: 输出 target={}",
+                line!(),
+                preview_text(&target, 120)
+            );
             Ok(target)
         } else {
             Err(NeovimError::Connection(
@@ -701,6 +748,10 @@ where
     #[instrument(skip(self))]
     async fn get_buffers(&self) -> Result<Vec<BufferInfo>, NeovimError> {
         debug!("Getting buffer information");
+        let context_id = self
+            .target()
+            .map(|target| preview_text(&target, 48))
+            .unwrap_or_else(|| "nvim-client".to_string());
 
         // Use inline Lua to get buffer information
         let lua_code = r#"
@@ -731,6 +782,12 @@ where
                     }
                 };
                 debug!("Found {} buffers", buffers.len());
+                info!(
+                    context_id = context_id,
+                    "读取 buffers 完成 | 调用栈: get_buffers() line {} | 数据流: 输出 buffers={}",
+                    line!(),
+                    buffers.len()
+                );
                 Ok(buffers)
             }
             Err(e) => {
@@ -742,7 +799,18 @@ where
 
     #[instrument(skip(self))]
     async fn execute_lua(&self, code: &str) -> Result<Value, NeovimError> {
+        let context_id = self
+            .target()
+            .map(|target| preview_text(&target, 48))
+            .unwrap_or_else(|| "nvim-client".to_string());
         debug!("Executing Lua code: {}", code);
+        info!(
+            context_id = context_id.clone(),
+            "执行 Lua 请求 | 调用栈: caller() → execute_lua() line {} | 数据流: code_bytes={} preview={}",
+            line!(),
+            code.len(),
+            preview_text(code, 120)
+        );
 
         if code.trim().is_empty() {
             return Err(NeovimError::Api("Lua code cannot be empty".to_string()));
@@ -756,10 +824,22 @@ where
         match conn.nvim.exec_lua(code, lua_args).await {
             Ok(result) => {
                 debug!("Lua execution successful, result: {:?}", result);
+                info!(
+                    context_id = context_id,
+                    "Lua 执行成功 | 调用栈: execute_lua() line {} | 数据流: 输出 result={}",
+                    line!(),
+                    preview_text(&format!("{:?}", result), 160)
+                );
                 Ok(result)
             }
             Err(e) => {
                 debug!("Lua execution failed: {e}");
+                info!(
+                    context_id = context_id,
+                    "Lua 执行失败 | 调用栈: execute_lua() line {} | 数据流: 输出 error={}",
+                    line!(),
+                    preview_text(&e.to_string(), 160)
+                );
                 Err(NeovimError::Api(format!("Lua execution failed: {e}")))
             }
         }
@@ -791,7 +871,14 @@ where
         document: DocumentIdentifier,
         position: Position,
     ) -> Result<NavigateResult, NeovimError> {
+        let context_id = self
+            .target()
+            .map(|target| preview_text(&target, 48))
+            .unwrap_or_else(|| "nvim-client".to_string());
         let text_document = self.resolve_text_document_identifier(&document).await?;
+        let text_document_uri = text_document.uri.clone();
+        let target_line = position.line;
+        let target_character = position.character;
 
         let conn = self.connection.as_ref().ok_or_else(|| {
             NeovimError::Connection("Not connected to any Neovim instance".to_string())
@@ -815,7 +902,21 @@ where
                 match serde_json::from_str::<NvimExecuteLuaResult<NavigateResult>>(
                     result.as_str().unwrap(),
                 ) {
-                    Ok(rv) => rv.into(),
+                    Ok(rv) => {
+                        let output: Result<NavigateResult, NeovimError> = rv.into();
+                        if let Ok(ref navigate_result) = output {
+                            info!(
+                                context_id = context_id,
+                                "导航完成 | 调用栈: navigate() line {} | 数据流: 输入 uri={} pos=({}, {}) → 输出 path={}",
+                                line!(),
+                                preview_text(&text_document_uri, 120),
+                                target_line,
+                                target_character,
+                                preview_text(&navigate_result.path, 120)
+                            );
+                        }
+                        output
+                    }
                     Err(e) => {
                         debug!("Failed to parse navigate result: {}", e);
                         Err(NeovimError::Api(format!(
@@ -838,6 +939,10 @@ where
         start: i64,
         end: i64,
     ) -> Result<String, NeovimError> {
+        let context_id = self
+            .target()
+            .map(|target| preview_text(&target, 48))
+            .unwrap_or_else(|| "nvim-client".to_string());
         let conn = self.connection.as_ref().ok_or_else(|| {
             NeovimError::Connection("Not connected to any Neovim instance".to_string())
         })?;
@@ -868,7 +973,20 @@ where
             Ok(result) => {
                 match serde_json::from_str::<NvimExecuteLuaResult<String>>(result.as_str().unwrap())
                 {
-                    Ok(rv) => rv.into(),
+                    Ok(rv) => {
+                        let output: Result<String, NeovimError> = rv.into();
+                        if let Ok(ref content) = output {
+                            info!(
+                                context_id = context_id,
+                                "读取文档完成 | 调用栈: read_document() line {} | 数据流: start={} end={} → bytes={}",
+                                line!(),
+                                start,
+                                end,
+                                content.len()
+                            );
+                        }
+                        output
+                    }
                     Err(e) => {
                         debug!("Failed to parse read document result: {}", e);
                         Err(NeovimError::Api(format!(

@@ -10,7 +10,10 @@ use rmcp::{
 };
 use tracing::{debug, instrument};
 
-use crate::neovim::NeovimClientTrait;
+use crate::{
+    logging::{preview_json, request_context_id},
+    neovim::NeovimClientTrait,
+};
 
 use super::core::NeovimMcpServer;
 
@@ -297,11 +300,24 @@ impl HybridToolRouter {
         arguments: serde_json::Value,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("HybridToolRouter dispatching tool: {}", tool_name);
+        let context_id = request_context_id(&_context, tool_name);
+        debug!(
+            context_id = %context_id,
+            "Tool 路由开始 | 调用栈: request() → HybridToolRouter::call_tool() line {} | 数据流: tool={} args={}",
+            line!(),
+            tool_name,
+            preview_json(&arguments, 240)
+        );
 
         // 1. Try dynamic tools first (higher priority)
         if let Some(tools_for_name) = self.dynamic_tools.get(tool_name) {
-            debug!("Found dynamic tool variants for: {}", tool_name);
+            debug!(
+                context_id = %context_id,
+                "命中动态工具 | 调用栈: HybridToolRouter::call_tool() line {} | 数据流: tool={} variants={}",
+                line!(),
+                tool_name,
+                tools_for_name.len()
+            );
 
             // Extract connection_id from arguments to route to the correct tool instance
             let connection_id = arguments
@@ -321,6 +337,7 @@ impl HybridToolRouter {
 
             if let Some(dynamic_tool) = tools_for_name.get(connection_id) {
                 debug!(
+                    context_id = %context_id,
                     "Executing dynamic tool: {} for connection: {}",
                     tool_name, connection_id
                 );
@@ -341,7 +358,12 @@ impl HybridToolRouter {
         }
 
         // 2. Fallback to static tools
-        debug!("Falling back to static tool: {}", tool_name);
+        debug!(
+            context_id = %context_id,
+            "回退静态工具 | 调用栈: HybridToolRouter::call_tool() line {} | 数据流: tool={}",
+            line!(),
+            tool_name
+        );
 
         // Create ToolCallContext and delegate to static router
         let request_param = CallToolRequestParams {
