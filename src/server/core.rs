@@ -575,6 +575,63 @@ mod tests {
         }
     }
 
+    // Stub client that is always dead (for testing stale connection pruning)
+    struct DeadStubClient {
+        target: String,
+    }
+
+    #[async_trait]
+    impl NeovimClientTrait for DeadStubClient {
+        fn target(&self) -> Option<String> {
+            Some(self.target.clone())
+        }
+
+        fn is_alive(&self) -> bool {
+            false // Always returns false to simulate dead connection
+        }
+
+        async fn disconnect(&mut self) -> Result<String, NeovimError> {
+            Ok("disconnected".to_string())
+        }
+
+        async fn get_buffers(&self) -> Result<Vec<BufferInfo>, NeovimError> {
+            Err(NeovimError::Connection("Dead connection".to_string()))
+        }
+
+        async fn execute_lua(&self, _code: &str) -> Result<Value, NeovimError> {
+            Err(NeovimError::Connection("Dead connection".to_string()))
+        }
+
+        async fn wait_for_notification(
+            &self,
+            notification_name: &str,
+            _timeout_ms: u64,
+        ) -> Result<Notification, NeovimError> {
+            Ok(Notification {
+                name: notification_name.to_string(),
+                args: Vec::new(),
+                timestamp: std::time::SystemTime::now(),
+            })
+        }
+
+        async fn navigate(
+            &self,
+            _document: DocumentIdentifier,
+            _position: Position,
+        ) -> Result<NavigateResult, NeovimError> {
+            Err(NeovimError::Connection("Dead connection".to_string()))
+        }
+
+        async fn read_document(
+            &self,
+            _document: DocumentIdentifier,
+            _start: i64,
+            _end: i64,
+        ) -> Result<String, NeovimError> {
+            Err(NeovimError::Connection("Dead connection".to_string()))
+        }
+    }
+
     #[test]
     fn test_http_session_server_preserves_existing_connections() {
         let server = NeovimMcpServer::with_connect_mode(Some("auto".to_string()));
@@ -590,6 +647,46 @@ mod tests {
         assert_eq!(session_server.connect_mode.as_deref(), Some("auto"));
         assert_eq!(session_server.nvim_clients.len(), 1);
         assert!(session_server.get_connection("abc1234").is_ok());
+    }
+
+    #[test]
+    fn test_http_stale_connection_is_pruned_from_registry() {
+        let server = NeovimMcpServer::with_connect_mode(Some("manual".to_string()));
+        let dead_connection_id = "dead123";
+
+        // Insert a dead connection
+        server.nvim_clients.insert(
+            dead_connection_id.to_string(),
+            Box::new(DeadStubClient {
+                target: "/tmp/dead.sock".to_string(),
+            }),
+        );
+
+        // Verify the connection exists in the registry
+        assert!(server.nvim_clients.contains_key(dead_connection_id));
+
+        // Try to get the connection - this should detect it's stale and prune it
+        let result = server.get_connection(dead_connection_id);
+
+        // Should return an error
+        assert!(result.is_err(), "Expected error for stale connection");
+
+        // Verify the error message contains expected information
+        let error_message = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error but got Ok"),
+        };
+        assert!(
+            error_message.contains("no longer active") || error_message.contains("stale"),
+            "Error should indicate connection is stale: {}",
+            error_message
+        );
+
+        // Verify the dead connection was pruned from registry
+        assert!(
+            !server.nvim_clients.contains_key(dead_connection_id),
+            "Dead connection should have been pruned from registry"
+        );
     }
 
     #[cfg(unix)]

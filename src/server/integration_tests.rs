@@ -1287,3 +1287,153 @@ async fn test_connect_tcp_rejects_unix_socket_path_with_hint()
 
     Ok(())
 }
+
+/// Test that closed-channel resume returns recoverable error instead of HTTP 500
+#[tokio::test]
+#[traced_test]
+async fn test_http_closed_channel_resume_returns_recoverable_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    info!("Testing closed-channel resume returns recoverable error");
+
+    let port = PORT_BASE + 201;
+    let base_url = format!("http://127.0.0.1:{}", port);
+    let mcp_url = format!("{}/mcp", base_url);
+
+    use hyper_util::{
+        rt::{TokioExecutor, TokioIo},
+        server::conn::auto::Builder,
+        service::TowerToHyperService,
+    };
+    use rmcp::transport::{
+        StreamableHttpServerConfig, StreamableHttpService,
+        streamable_http_server::session::local::{LocalSessionManager, SessionConfig},
+    };
+    use tokio::net::TcpListener;
+
+    // Create server
+    let server = crate::NeovimMcpServer::with_connect_mode(Some("manual".to_string()));
+
+    // Start HTTP server
+    let addr = format!("127.0.0.1:{}", port);
+    let listener = TcpListener::bind(&addr).await?;
+
+    let session_config = SessionConfig {
+        channel_capacity: 64,
+        keep_alive: None,
+    };
+    let session_manager = LocalSessionManager {
+        sessions: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+        session_config,
+    };
+
+    let server_for_handler = server.clone();
+    let _server_handle = tokio::spawn(async move {
+        let service = TowerToHyperService::new(StreamableHttpService::new(
+            move || Ok(server_for_handler.server_for_http_session()),
+            session_manager.into(),
+            StreamableHttpServerConfig {
+                stateful_mode: true,
+                ..Default::default()
+            },
+        ));
+
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(_) => break,
+            };
+            let io = TokioIo::new(stream);
+            let service = service.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) = Builder::new(TokioExecutor::default())
+                    .serve_connection(io, service)
+                    .await
+                {
+                    tracing::error!("HTTP connection error: {}", e);
+                }
+            });
+        }
+    });
+
+    // Give server time to start
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let client = reqwest::Client::new();
+
+    // Create a session
+    let init_request = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#.to_string();
+    let response = http_post(&client, &mcp_url, init_request).await?;
+
+    assert_eq!(response.status(), 200);
+    let session_id = response
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|h| h.to_str().ok())
+        .map(|s: &str| s.to_string())
+        .expect("Should have session ID");
+
+    // Send initialized notification
+    let initialized_request = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_string();
+    let response_init = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("mcp-session-id", &session_id)
+        .body(initialized_request)
+        .send()
+        .await?;
+    assert_eq!(response_init.status(), 202);
+
+    // Now simulate a scenario where the session's channel is closed
+    // This happens when we try to resume a session that has been cleaned up
+    // We'll use a non-existent session ID to simulate this
+    let fake_session_id = "nonexistent-session-id-12345";
+
+    // Try to send a request with a non-existent session ID
+    let tool_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+    }).to_string();
+
+    let response = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("mcp-session-id", fake_session_id)
+        .body(tool_request)
+        .send()
+        .await?;
+
+    // The response should NOT be 500 - it should be a recoverable error
+    // HTTP status should be 200 with error in JSON-RPC body
+    // OR it could be a 4xx error indicating session not found
+    let status = response.status();
+    info!("Response status for closed-channel resume: {}", status);
+
+    // Accept 200 (with JSON-RPC error), 400 (bad request), 401 (unauthorized), or 404 (session not found)
+    // But NOT 500 (internal server error)
+    assert!(
+        status.is_success() || status == 400 || status == 401 || status == 404,
+        "Closed-channel resume should return recoverable error (2xx/400/401/404), not 500. Got: {}",
+        status
+    );
+
+    if status == 200 {
+        let body = response.text().await?;
+        info!("Response body: {}", body);
+
+        // Check that the error message suggests re-initializing or creating a new session
+        assert!(
+            body.contains("error") || body.contains("session") || body.contains("initialize") || body.contains("reconnect"),
+            "Response should contain error information or session guidance: {}",
+            body
+        );
+    }
+
+    info!("Closed-channel resume test completed successfully - got status {} instead of 500", status);
+
+    Ok(())
+}
