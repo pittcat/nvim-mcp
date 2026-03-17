@@ -1,3 +1,7 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
 use rmcp::{
     model::CallToolRequestParams,
     serde_json::{Map, Value},

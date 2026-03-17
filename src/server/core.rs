@@ -692,6 +692,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn test_auto_connect_current_project_targets_skips_stale_sockets()
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::net::UnixListener;
@@ -742,8 +743,6 @@ mod tests {
     #[tokio::test]
     async fn test_get_connection_prunes_stale_connections() -> Result<(), Box<dyn std::error::Error>>
     {
-        use std::sync::atomic::AtomicBool;
-
         // Create a stub client that simulates a dead connection
         struct DeadConnection {
             target_str: String,
