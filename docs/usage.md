@@ -47,6 +47,36 @@ vim.fn.serverstart("127.0.0.1:6666")
 vim.fn.serverstart("./nvim.sock")
 ```
 
+#### Option C: Using Install Script (HTTP Daemon Mode)
+
+For a persistent HTTP server that runs as a system service:
+
+```bash
+# Build from source and install as a system service
+./install.sh
+
+# Use an existing binary
+./install.sh --binary ./target/release/nvim-mcp
+
+# Custom HTTP port
+./install.sh --port 9090
+
+# Binary already in ~/.local/bin/, configure service only
+./install.sh --skip-build
+```
+
+The install script will:
+- Build the binary from source (or use provided binary)
+- Install to `~/.local/bin/`
+- Configure a system service (systemd on Linux, launchd on macOS)
+- Start the HTTP server with auto-connect mode
+
+After installation, configure your MCP client:
+
+```bash
+claude mcp add -s local nvim --transport http http://127.0.0.1:8080
+```
+
 ### 2. Start the Server working with various clients
 
 ```bash
@@ -72,7 +102,7 @@ nvim-mcp --log-file ./nvim-mcp.log --log-level debug
 nvim-mcp --http-port 8080 --connect auto
 
 # HTTP server mode with custom bind address
-nvim-mcp --http-port 8080 --http-host 0.0.0.0
+nvim-mcp --http-port 8080 --http-host 127.0.0.1
 ```
 
 ## Command Line Options
@@ -150,6 +180,8 @@ The server supports HTTP transport mode for web-based integrations and
 applications that cannot use stdio transport. This is useful for web
 applications, browser extensions, or other HTTP-based MCP clients.
 
+> **Tip**: Use the [`install.sh`](#option-c-using-install-script-http-daemon-mode) script to automatically set up HTTP server as a system service.
+
 ### Starting HTTP Server Mode
 
 ```bash
@@ -157,7 +189,7 @@ applications, browser extensions, or other HTTP-based MCP clients.
 nvim-mcp --http-port 8080
 
 # Bind to all interfaces
-nvim-mcp --http-port 8080 --http-host 0.0.0.0
+nvim-mcp --http-port 8080 --http-host 127.0.0.1
 
 # With custom logging
 nvim-mcp --http-port 8080 --log-file ./nvim-mcp.log --log-level debug
@@ -172,12 +204,17 @@ For Claude Code specifically:
 claude mcp add -s project nvim-mcp-stdio -- /Users/pittcat/Dev/Rust/nvim-mcp/target/release/nvim-mcp \
   --connect auto --log-file ./nvim-mcp.log --log-level debug
 
-# HTTP mode: start nvim-mcp separately, then point Claude Code at the URL
-nvim-mcp --http-port 8080 --connect auto --log-file ./nvim-mcp-http.log --log-level debug
+# HTTP mode: start nvim-mcp separately, then point Claude Code at the MCP endpoint
+./target/release/nvim-mcp --http-port 8080 --http-host 127.0.0.1 --connect auto
+
+# With explicit log file and debug logging
+nvim-mcp --http-port 8080 --http-host 127.0.0.1 --connect auto --log-file ./nvim-mcp-http.log --log-level debug
 claude mcp add -s project --transport http nvim-mcp-http http://127.0.0.1:8080
 ```
 
-The `nvim-mcp-http` entry in `docs/nvim.json` does not start the HTTP server for you. Start the `nvim-mcp --http-port 8080 ...` process yourself first, then let Claude Code connect to that URL.
+The `nvim-mcp-http` entry in `docs/nvim.json` does not start the HTTP server for you. Start the `nvim-mcp --http-port 8080 ...` process yourself first, then let Claude Code connect to `http://127.0.0.1:8080`.
+
+For local Claude Code usage, prefer `--http-host 127.0.0.1` over `0.0.0.0`. On macOS, a different process bound to a more specific address such as `127.0.0.1:8080` can intercept localhost traffic even if `nvim-mcp` is also listening on `0.0.0.0:8080`.
 
 ### Multi-Client HTTP Mode (Shared Daemon)
 
@@ -185,11 +222,13 @@ The HTTP server supports multiple concurrent MCP clients sharing the same `nvim-
 
 #### Usage Pattern
 
+> **Note**: You can use `install.sh` to automatically set up the HTTP server as a persistent system service. See [Option C](#option-c-using-install-script-http-daemon-mode) above.
+
 ```bash
 # 1. Start the HTTP server (single daemon)
 nvim-mcp --http-port 8080 --connect auto --log-file ./nvim-mcp.log --log-level info
 
-# 2. Configure multiple clients to connect to the same URL
+# 2. Configure multiple clients to connect to the same MCP endpoint
 # Client A (e.g., first Claude Code window)
 claude mcp add -s project nvim-shared --transport http http://127.0.0.1:8080
 
