@@ -4,10 +4,10 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use serde_json::json;
-use tracing::{debug, info, instrument};
+use tracing::{debug, warn, instrument};
 
 use super::core::NeovimMcpServer;
-use crate::logging::{preview_json, preview_text, request_context_id};
+use crate::logging::request_context_id;
 
 fn new_resource(uri: &str, name: &str, description: Option<&str>) -> Resource {
     Resource {
@@ -28,11 +28,6 @@ fn new_resource(uri: &str, name: &str, description: Option<&str>) -> Resource {
 impl ServerHandler for NeovimMcpServer {
     #[instrument(skip(self))]
     fn get_info(&self) -> ServerInfo {
-        info!(
-            context_id = "server_info",
-            "返回 server info | 调用栈: ServerHandler::get_info() line {} | 数据流: capabilities=tools,tool_list_changed,resources",
-            line!()
-        );
         ServerInfo {
             instructions: None,
             capabilities: ServerCapabilities::builder()
@@ -51,13 +46,7 @@ impl ServerHandler for NeovimMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
         let context_id = request_context_id(&context, "list_resources");
-        debug!("Listing available resources");
-        info!(
-            context_id = %context_id,
-            "列出资源 | 调用栈: request() → list_resources() line {} | 数据流: active_connections={}",
-            line!(),
-            self.nvim_clients.len()
-        );
+        debug!(context_id = %context_id, "Listing available resources");
 
         let mut resources = vec![
             new_resource(
@@ -100,13 +89,7 @@ impl ServerHandler for NeovimMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
         let context_id = request_context_id(&context, "read_resource");
-        debug!("Reading resource: {}", uri);
-        info!(
-            context_id = %context_id,
-            "读取资源 | 调用栈: request() → read_resource() line {} | 数据流: uri={}",
-            line!(),
-            preview_text(uri.as_str(), 120)
-        );
+        debug!(context_id = %context_id, "Reading resource: {}", uri);
 
         match uri.as_str() {
             "nvim-connections://" => {
@@ -249,14 +232,7 @@ impl ServerHandler for NeovimMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         let context_id = request_context_id(&context, "list_tools");
-        debug!("Listing tools (static + dynamic) via HybridToolRouter");
-        info!(
-            context_id = %context_id,
-            "列出工具开始 | 调用栈: request() → list_tools() line {} | 数据流: active_connections={} dynamic_tool_names={}",
-            line!(),
-            self.nvim_clients.len(),
-            self.hybrid_router.get_dynamic_tool_count()
-        );
+        debug!(context_id = %context_id, "Listing tools (static + dynamic)");
 
         // Get tools from HybridToolRouter instead of static router
         let mut tools = self.hybrid_router.list_all_tools();
@@ -274,12 +250,7 @@ impl ServerHandler for NeovimMcpServer {
         }
 
         if self.nvim_clients.is_empty() {
-            info!(
-                context_id = %context_id,
-                "无连接时过滤 connection-aware tools | 调用栈: list_tools() line {} | 数据流: tools_before={}",
-                line!(),
-                tools.len()
-            );
+            debug!(context_id = %context_id, "No connections, filtering connection-aware tools");
             tools.retain(|tool| {
                 !tool
                     .input_schema
@@ -295,12 +266,7 @@ impl ServerHandler for NeovimMcpServer {
             });
         }
 
-        info!(
-            context_id = %context_id,
-            "列出工具完成 | 调用栈: list_tools() line {} | 数据流: tools_after={}",
-            line!(),
-            tools.len()
-        );
+        debug!(context_id = %context_id, "Listed {} tools", tools.len());
 
         Ok(ListToolsResult {
             tools,
@@ -319,16 +285,7 @@ impl ServerHandler for NeovimMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let context_id = request_context_id(&context, name.as_ref());
-        debug!("Calling tool: {} via HybridToolRouter", name);
-        info!(
-            context_id = %context_id,
-            "收到 tool 调用 | 调用栈: request() → ServerHandler::call_tool() line {} | 数据流: tool={} raw_args_present={} request_id={:?} meta={}",
-            line!(),
-            name,
-            arguments.is_some(),
-            context.id,
-            preview_text(&format!("{:?}", &context.meta), 240)
-        );
+        debug!(context_id = %context_id, "Calling tool: {}", name);
 
         // Convert arguments to serde_json::Value
         let args = arguments.unwrap_or_default();
@@ -338,13 +295,6 @@ impl ServerHandler for NeovimMcpServer {
                 Some(json!({"error": e.to_string()})),
             )
         })?;
-        info!(
-            context_id = %context_id,
-            "tool 参数已序列化 | 调用栈: ServerHandler::call_tool() line {} | 数据流: tool={} args={}",
-            line!(),
-            name,
-            preview_json(&args_value, 240)
-        );
 
         // Use HybridToolRouter for dispatch
         let result = self
@@ -352,20 +302,17 @@ impl ServerHandler for NeovimMcpServer {
             .call_tool(self, &name, args_value, context)
             .await;
         match &result {
-            Ok(call_result) => info!(
+            Ok(call_result) => debug!(
                 context_id = %context_id,
-                "tool 调用完成 | 调用栈: ServerHandler::call_tool() line {} | 数据流: tool={} is_error={:?} content_items={}",
-                line!(),
+                "Tool {} completed, content items: {}",
                 name,
-                call_result.is_error,
                 call_result.content.len()
             ),
-            Err(error) => info!(
+            Err(error) => warn!(
                 context_id = %context_id,
-                "tool 调用失败 | 调用栈: ServerHandler::call_tool() line {} | 数据流: tool={} error={}",
-                line!(),
+                "Tool {} failed: {}",
                 name,
-                preview_text(&error.to_string(), 180)
+                error
             ),
         }
         result

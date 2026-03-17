@@ -11,7 +11,7 @@ use rmcp::{
 use tracing::{debug, instrument};
 
 use crate::{
-    logging::{preview_json, request_context_id},
+    logging::request_context_id,
     neovim::NeovimClientTrait,
 };
 
@@ -301,20 +301,13 @@ impl HybridToolRouter {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let context_id = request_context_id(&_context, tool_name);
-        debug!(
-            context_id = %context_id,
-            "Tool 路由开始 | 调用栈: request() → HybridToolRouter::call_tool() line {} | 数据流: tool={} args={}",
-            line!(),
-            tool_name,
-            preview_json(&arguments, 240)
-        );
+        debug!(context_id = %context_id, "Routing tool: {}", tool_name);
 
         // 1. Try dynamic tools first (higher priority)
         if let Some(tools_for_name) = self.dynamic_tools.get(tool_name) {
             debug!(
                 context_id = %context_id,
-                "命中动态工具 | 调用栈: HybridToolRouter::call_tool() line {} | 数据流: tool={} variants={}",
-                line!(),
+                "Dynamic tool {} has {} variants",
                 tool_name,
                 tools_for_name.len()
             );
@@ -358,12 +351,7 @@ impl HybridToolRouter {
         }
 
         // 2. Fallback to static tools
-        debug!(
-            context_id = %context_id,
-            "回退静态工具 | 调用栈: HybridToolRouter::call_tool() line {} | 数据流: tool={}",
-            line!(),
-            tool_name
-        );
+        debug!(context_id = %context_id, "Falling back to static tool: {}", tool_name);
 
         // Create ToolCallContext and delegate to static router
         let request_param = CallToolRequestParams {

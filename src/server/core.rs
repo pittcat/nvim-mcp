@@ -92,9 +92,7 @@ impl NeovimMcpServer {
                     // Connection is stale - remove it from registry
                     warn!(
                         context_id = connection_id,
-                        "检测到 stale 连接 | 调用栈: server() → get_connection() line {} | 数据流: connection_id={} → 触发清理",
-                        line!(),
-                        connection_id
+                        "Stale connection detected, removing"
                     );
                     // Remove the stale connection
                     let target = connection
@@ -117,25 +115,11 @@ impl NeovimMcpServer {
                     ));
                 }
 
-                debug!(
-                    context_id = connection_id,
-                    "连接查询成功 | 调用栈: server() → get_connection() line {} | 数据流: 输入 connection_id={} → 输出 target={}",
-                    line!(),
-                    connection_id,
-                    connection
-                        .target()
-                        .map(|target| preview_text(&target, 80))
-                        .unwrap_or_else(|| "Unknown".to_string())
-                );
+                debug!(context_id = connection_id, "Connection found: {}", connection_id);
                 Ok(connection)
             }
             None => {
-                warn!(
-                    context_id = connection_id,
-                    "连接查询失败 | 调用栈: server() → get_connection() line {} | 数据流: 输入 connection_id={} → 输出 not_found",
-                    line!(),
-                    connection_id
-                );
+                warn!(context_id = connection_id, "Connection not found");
                 Err(McpError::invalid_request(
                     format!("No Neovim connection found for ID: {connection_id}"),
                     None,
@@ -208,16 +192,7 @@ impl NeovimMcpServer {
         for item in self.nvim_clients.iter() {
             let connection_id = item.key().as_str();
             let client = item.value().as_ref();
-            info!(
-                context_id = connection_id,
-                "开始发现 Lua tools | 调用栈: server() → discover_and_register_lua_tools() line {} | 数据流: 输入 connection_id={} target={}",
-                line!(),
-                connection_id,
-                client
-                    .target()
-                    .map(|target| preview_text(&target, 80))
-                    .unwrap_or_else(|| "Unknown".to_string())
-            );
+            debug!(context_id = connection_id, "Discovering Lua tools");
             lua_tools::discover_and_register_lua_tools(self, connection_id, client).await?;
         }
         Ok(())
@@ -235,13 +210,7 @@ impl NeovimMcpServer {
     ) -> Result<(), McpError> {
         let context_id = request_context_id(ctx, "setup_client");
         let mut should_notify = self.nvim_clients.is_empty();
-        info!(
-            context_id = %context_id,
-            "注册新客户端 | 调用栈: setup_new_client() line {} | 数据流: connection_id={} → nvim_clients_before={}",
-            line!(),
-            connection_id,
-            self.nvim_clients.len()
-        );
+        info!(context_id = %context_id, "Registering new client: {}", connection_id);
 
         // Discover and register Lua tools for this connection
         if let Err(e) =
@@ -273,13 +242,7 @@ impl NeovimMcpServer {
                 });
         }
 
-        info!(
-            context_id = %context_id,
-            "客户端注册完成 | 调用栈: setup_new_client() line {} | 数据流: nvim_clients_after={} | notify_tool_list_changed={}",
-            line!(),
-            self.nvim_clients.len(),
-            should_notify
-        );
+        info!(context_id = %context_id, "Client registered, total connections: {}", self.nvim_clients.len());
 
         Ok(())
     }

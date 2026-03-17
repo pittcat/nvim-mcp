@@ -167,12 +167,7 @@ impl NeovimMcpServer {
     #[instrument(skip(self))]
     pub async fn get_targets(&self) -> Result<CallToolResult, McpError> {
         let targets = find_get_all_targets();
-        tracing::info!(
-            context_id = "get_targets",
-            "扫描 Neovim targets | 调用栈: tool_router() → get_targets() line {} | 数据流: 输出 targets={}",
-            line!(),
-            targets.len()
-        );
+        tracing::debug!(context_id = "get_targets", "Found {} targets", targets.len());
         if targets.is_empty() {
             return Err(McpError::invalid_request(
                 "No Neovim targets found".to_string(),
@@ -192,13 +187,7 @@ impl NeovimMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let context_id = request_context_id(&ctx, "connect");
         let connection_id = self.generate_shorter_connection_id(&path);
-        tracing::info!(
-            context_id = %context_id,
-            "开始连接 Neovim | 调用栈: request() → connect() line {} | 数据流: 输入 target={} → connection_id={}",
-            line!(),
-            preview_text(&path, 120),
-            connection_id
-        );
+        tracing::debug!(context_id = %context_id, "Connecting to: {}", preview_text(&path, 120));
 
         // If connection already exists, disconnect the old one first (ignoring errors)
         if let Some(mut old_client) = self.nvim_clients.get_mut(&connection_id) {
@@ -211,12 +200,7 @@ impl NeovimMcpServer {
         self.setup_new_client(&connection_id, Box::new(client), &ctx)
             .await?;
 
-        tracing::info!(
-            context_id = %context_id,
-            "Neovim 连接成功 | 调用栈: connect() line {} | 数据流: target={} → status=connected",
-            line!(),
-            preview_text(&path, 120)
-        );
+        tracing::debug!(context_id = %context_id, "Connected successfully");
 
         Ok(CallToolResult::success(vec![Content::json(
             serde_json::json!({
@@ -235,20 +219,13 @@ impl NeovimMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let context_id = request_context_id(&ctx, "connect_tcp");
         let connection_id = self.generate_shorter_connection_id(&address);
-        tracing::info!(
-            context_id = %context_id,
-            "开始 TCP 连接 | 调用栈: request() → connect_tcp() line {} | 数据流: 输入 address={} → connection_id={}",
-            line!(),
-            preview_text(&address, 120),
-            connection_id
-        );
+        tracing::debug!(context_id = %context_id, "Connecting via TCP to: {}", preview_text(&address, 120));
 
         // Check if the address looks like a Unix socket path (common misuse)
         if is_unix_socket_path(&address) {
             tracing::warn!(
                 context_id = %context_id,
-                "TCP 连接收到 Unix socket 路径 | 调用栈: connect_tcp() line {} | 数据流: address={}",
-                line!(),
+                "Received Unix socket path for TCP connection: {}",
                 preview_text(&address, 120)
             );
             return Err(McpError::invalid_params(
@@ -276,12 +253,7 @@ impl NeovimMcpServer {
         self.setup_new_client(&connection_id, Box::new(client), &ctx)
             .await?;
 
-        tracing::info!(
-            context_id = %context_id,
-            "TCP 连接成功 | 调用栈: connect_tcp() line {} | 数据流: address={} → status=connected",
-            line!(),
-            preview_text(&address, 120)
-        );
+        tracing::debug!(context_id = %context_id, "TCP connection successful");
 
         Ok(CallToolResult::success(vec![Content::json(
             serde_json::json!({
@@ -303,13 +275,7 @@ impl NeovimMcpServer {
             let client = self.get_connection(&connection_id)?;
             client.target().unwrap_or_else(|| "Unknown".to_string())
         };
-        tracing::info!(
-            context_id = %context_id,
-            "开始断开连接 | 调用栈: request() → disconnect() line {} | 数据流: connection_id={} target={}",
-            line!(),
-            connection_id,
-            preview_text(&target, 120)
-        );
+        tracing::debug!(context_id = %context_id, "Disconnecting from: {}", preview_text(&target, 120));
 
         // Remove the connection from the map
         if let Some((_, mut client)) = self.nvim_clients.remove(&connection_id) {
@@ -319,12 +285,7 @@ impl NeovimMcpServer {
                     None,
                 ));
             }
-            tracing::info!(
-                context_id = %context_id,
-                "断开连接成功 | 调用栈: disconnect() line {} | 数据流: connection_id={} → status=disconnected",
-                line!(),
-                connection_id
-            );
+            tracing::debug!(context_id = %context_id, "Disconnected successfully");
             Ok(CallToolResult::success(vec![Content::json(
                 serde_json::json!({
                     "connection_id": connection_id,
@@ -349,13 +310,7 @@ impl NeovimMcpServer {
         let context_id = connection_context_id(&connection_id, "list_buffers");
         let client = self.get_connection(&connection_id)?;
         let buffers = client.get_buffers().await?;
-        tracing::info!(
-            context_id = %context_id,
-            "读取 buffers 成功 | 调用栈: request() → list_buffers() line {} | 数据流: 输入 connection_id={} → 输出 buffers={}",
-            line!(),
-            connection_id,
-            buffers.len()
-        );
+        tracing::debug!(context_id = %context_id, "Listed {} buffers", buffers.len());
         Ok(CallToolResult::success(vec![Content::json(buffers)?]))
     }
 
@@ -374,18 +329,9 @@ impl NeovimMcpServer {
         }): Parameters<ReadDocumentRequest>,
     ) -> Result<CallToolResult, McpError> {
         let context_id = connection_context_id(&connection_id, "read");
-        let document_summary = summarize_document(&document);
         let client = self.get_connection(&connection_id)?;
         let content = client.read_document(document, start, end).await?;
-        tracing::info!(
-            context_id = %context_id,
-            "读取文档成功 | 调用栈: request() → read_document_tool() line {} | 数据流: {} range=[{}, {}) → bytes={}",
-            line!(),
-            document_summary,
-            start,
-            end,
-            content.len()
-        );
+        tracing::debug!(context_id = %context_id, "Read document: {} bytes", content.len());
         Ok(CallToolResult::success(vec![Content::text(content)]))
     }
 
@@ -399,21 +345,10 @@ impl NeovimMcpServer {
         }): Parameters<ExecuteLuaRequest>,
     ) -> Result<CallToolResult, McpError> {
         let context_id = connection_context_id(&connection_id, "exec_lua");
-        tracing::info!(
-            context_id = %context_id,
-            "执行 Lua | 调用栈: request() → exec_lua() line {} | 数据流: code_bytes={} code_preview={}",
-            line!(),
-            code.len(),
-            preview_text(&code, 120)
-        );
+        tracing::debug!(context_id = %context_id, "Executing Lua: {}", preview_text(&code, 120));
         let client = self.get_connection(&connection_id)?;
         let result = client.execute_lua(&code).await?;
-        tracing::info!(
-            context_id = %context_id,
-            "Lua 执行成功 | 调用栈: exec_lua() line {} | 数据流: 输出 result_type={}",
-            line!(),
-            result.to_string()
-        );
+        tracing::debug!(context_id = %context_id, "Lua executed successfully");
         Ok(CallToolResult::success(vec![Content::json(
             serde_json::json!({
                 "result": format!("{:?}", result)
@@ -441,12 +376,7 @@ impl NeovimMcpServer {
                 None,
             )
         })?;
-        tracing::info!(
-            context_id = %context_id,
-            "读取光标位置成功 | 调用栈: request() → cursor_position() line {} | 数据流: 输出={}",
-            line!(),
-            json_result
-        );
+        tracing::debug!(context_id = %context_id, "Cursor position retrieved");
 
         Ok(CallToolResult::success(vec![Content::json(json_result)?]))
     }
@@ -464,24 +394,11 @@ impl NeovimMcpServer {
         }): Parameters<NavigateParams>,
     ) -> Result<CallToolResult, McpError> {
         let context_id = connection_context_id(&connection_id, "navigate");
-        tracing::info!(
-            context_id = %context_id,
-            "开始导航 | 调用栈: request() → navigate() line {} | 数据流: {} pos=({}, {})",
-            line!(),
-            summarize_document(&document),
-            position.line,
-            position.character
-        );
+        tracing::debug!(context_id = %context_id, "Navigating to {} at line {}, char {}",
+            summarize_document(&document), position.line, position.character);
         let client = self.get_connection(&connection_id)?;
         let result = client.navigate(document, position).await?;
-        tracing::info!(
-            context_id = %context_id,
-            "导航成功 | 调用栈: navigate() line {} | 数据流: 输出 path={} line={} col={}",
-            line!(),
-            preview_text(&result.path, 120),
-            result.line,
-            result.column
-        );
+        tracing::debug!(context_id = %context_id, "Navigation complete: {}", preview_text(&result.path, 120));
         Ok(CallToolResult::success(vec![Content::json(result)?]))
     }
 }
