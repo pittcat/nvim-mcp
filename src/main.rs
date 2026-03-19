@@ -123,8 +123,13 @@ struct Cli {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // Initialize logging - to stderr by default, or to file if --log-file specified
-    let _guard = init_logging(cli.log_file.as_ref(), &cli.log_level)?;
+    // Initialize logging only for HTTP server mode (not stdio mode)
+    // In stdio mode, logs would interfere with the MCP protocol on stdin/stdout
+    let _guard = if cli.http_port.is_some() {
+        init_logging(cli.log_file.as_ref(), &cli.log_level)?
+    } else {
+        None
+    };
 
     info!("Starting nvim-mcp v{}", long_version());
 
