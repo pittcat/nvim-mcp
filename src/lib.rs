@@ -1,3 +1,4 @@
+pub mod http_transport;
 pub mod logging;
 mod neovim;
 mod server;

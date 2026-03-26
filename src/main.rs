@@ -4,7 +4,7 @@ use clap::Parser;
 use hyper::{
     Request,
     body::Incoming,
-    service::{Service, service_fn},
+    service::service_fn,
 };
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
@@ -22,6 +22,7 @@ use tracing::{error, info, warn};
 
 use nvim_mcp::{
     NeovimMcpServer, auto_connect_current_project_targets, auto_connect_single_target,
+    http_transport,
     logging::init_logging,
 };
 
@@ -238,7 +239,7 @@ async fn run_server(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     info!(context_id = %context_id, "HTTP request: {} {} from {}", method, uri, peer_addr);
 
                     async move {
-                        let response = Service::call(&service, request).await;
+                        let response = http_transport::handle_request(service.clone(), request).await;
                         match &response {
                             Ok(response) => info!(context_id = %context_id, "HTTP response: {}", response.status()),
                             Err(error) => warn!(context_id = %context_id, "HTTP error: {}", error),

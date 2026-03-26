@@ -2,6 +2,7 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
+use hyper::service::service_fn;
 use rmcp::{
     model::CallToolRequestParams,
     serde_json::{Map, Value},
@@ -650,8 +651,12 @@ async fn setup_http_server_with_nvim(
             let service = service.clone();
 
             tokio::spawn(async move {
+                let request_service = service_fn(move |request| {
+                    crate::http_transport::handle_request(service.clone(), request)
+                });
+
                 if let Err(e) = Builder::new(TokioExecutor::default())
-                    .serve_connection(io, service)
+                    .serve_connection(io, request_service)
                     .await
                 {
                     tracing::error!("HTTP connection error: {}", e);
@@ -664,6 +669,76 @@ async fn setup_http_server_with_nvim(
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     Ok((handle, nvim_guard, connection_id))
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_http_initial_sse_probe_without_session_id_returns_ok_stream()
+-> Result<(), Box<dyn std::error::Error>> {
+    let port = PORT_BASE + 90;
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let (_server_handle, _nvim_guard, _connection_id) = setup_http_server_with_nvim(port).await?;
+    let client = reqwest::Client::new();
+
+    let mut response = http_get_sse(&client, &base_url, None).await?;
+
+    assert_eq!(
+        response.status(),
+        200,
+        "Initial SSE probe without a session ID should succeed"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream"),
+        "Initial SSE probe should return an SSE stream"
+    );
+
+    let first_chunk = tokio::time::timeout(tokio::time::Duration::from_secs(1), response.chunk())
+        .await??
+        .expect("Initial SSE probe should produce a first chunk");
+    let body = String::from_utf8_lossy(&first_chunk);
+    assert!(
+        body.contains(':'),
+        "Initial SSE probe should return a keep-alive style SSE payload: {body}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_http_invalid_session_request_returns_bad_request_not_unauthorized()
+-> Result<(), Box<dyn std::error::Error>> {
+    let port = PORT_BASE + 91;
+    let base_url = format!("http://127.0.0.1:{}", port);
+
+    let (_server_handle, _nvim_guard, _connection_id) = setup_http_server_with_nvim(port).await?;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get(&base_url)
+        .header("Accept", "text/event-stream")
+        .header("mcp-session-id", "missing-session-id")
+        .send()
+        .await?;
+
+    assert_eq!(
+        response.status(),
+        400,
+        "Session-related request failures should return Bad Request instead of Unauthorized"
+    );
+
+    let body = response.text().await?;
+    assert!(
+        body.contains("Session"),
+        "Session-related failures should mention the session problem: {body}"
+    );
+
+    Ok(())
 }
 
 /// Test that multiple HTTP clients can create/resume sessions without hitting closed channels
@@ -1059,8 +1134,12 @@ async fn test_http_stale_socket_does_not_break_shared_session()
             let service = service.clone();
 
             tokio::spawn(async move {
+                let request_service = service_fn(move |request| {
+                    crate::http_transport::handle_request(service.clone(), request)
+                });
+
                 if let Err(e) = Builder::new(TokioExecutor::default())
-                    .serve_connection(io, service)
+                    .serve_connection(io, request_service)
                     .await
                 {
                     tracing::error!("HTTP connection error: {}", e);
