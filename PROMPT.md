@@ -1,0 +1,1 @@
+Implement the feature in specs/remove-debug-log-probes. Follow requirements.md, design.md, and implementation-plan.md. Keep tests, lint, and typecheck passing. Stop only when all plan items are complete.

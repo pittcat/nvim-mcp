@@ -1,0 +1,4 @@
+lru-capacity = 32
+cache-priming.enable = false
+proc-macro.enable = false
+check-on-save.enable = false
